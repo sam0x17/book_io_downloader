@@ -1,14 +1,17 @@
+use hyper::{client::HttpConnector, Body};
 use ipfs_api::IpfsClient;
 
 #[derive(Clone)]
 pub struct Client {
     ipfs_client: IpfsClient,
+    hyper_client: hyper::Client<HttpConnector, Body>,
 }
 
 impl Default for Client {
     fn default() -> Self {
         Self {
             ipfs_client: IpfsClient::default(),
+            hyper_client: hyper::Client::default(),
         }
     }
 }
