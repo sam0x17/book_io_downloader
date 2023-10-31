@@ -2,7 +2,9 @@
 name = "book_io_downloader"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["sam0x17"]
+repository = "https://github.com/sam0x17/book_io_downloader"
+description = "A CLI utility and client library for bulk-downloading book covers from book.io"
+license = "MIT"
 
 [dependencies]
