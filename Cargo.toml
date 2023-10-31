@@ -8,3 +8,4 @@ description = "A CLI utility and client library for bulk-downloading book covers
 license = "MIT"
 
 [dependencies]
+ipfs-api = "0.17.0"
