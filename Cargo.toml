@@ -9,3 +9,4 @@ license = "MIT"
 
 [dependencies]
 ipfs-api = "0.17.0"
+ipfs-api-backend-hyper = "0.6"

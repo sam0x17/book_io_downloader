@@ -78,6 +78,7 @@ name = "book_io_downloader"
 version = "0.1.0"
 dependencies = [
  "ipfs-api",
+ "ipfs-api-backend-hyper",
 ]
 
 [[package]]
