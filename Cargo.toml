@@ -8,6 +8,5 @@ description = "A CLI utility and client library for bulk-downloading book covers
 license = "MIT"
 
 [dependencies]
-hyper = { version = "0.14.27", features = ["client"] }
 ipfs-api = "0.17.0"
 ipfs-api-backend-hyper = "0.6"
