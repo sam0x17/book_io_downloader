@@ -8,5 +8,6 @@ description = "A CLI utility and client library for bulk-downloading book covers
 license = "MIT"
 
 [dependencies]
+blockfrost = "0.2.1"
 ipfs-api = "0.17.0"
 ipfs-api-backend-hyper = "0.6"
