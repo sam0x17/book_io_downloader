@@ -13,8 +13,15 @@ impl Default for Client {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CollectionMetadata;
+
 impl Client {
     pub fn new() -> Self {
         Client::default()
+    }
+
+    pub async fn get_collection_metadata(&self) -> Result<CollectionMetadata, ()> {
+        Ok(CollectionMetadata)
     }
 }
