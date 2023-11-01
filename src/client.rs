@@ -1,4 +1,4 @@
-use blockfrost::{load, BlockFrostApi};
+use blockfrost::{load, stream::StreamExt, BlockFrostApi};
 use ipfs_api::IpfsClient;
 
 pub const METADATA_URL: &'static str = "https://api.book.io/api/v0/collections";
@@ -41,6 +41,18 @@ impl Client {
 
     pub async fn get_metadata(&self) -> Result<CollectionMetadata, GetMetadataError> {
         Ok(CollectionMetadata)
+    }
+
+    pub async fn is_collection_id_valid(
+        &self,
+        collection_id: &str,
+    ) -> Result<bool, blockfrost::Error> {
+        self.blockfrost_client
+            .assets_all()
+            .any(|assets| async move {
+                let assets = asset.unwrap();
+                asset.hello()
+            })
     }
 }
 

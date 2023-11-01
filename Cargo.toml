@@ -11,3 +11,4 @@ license = "MIT"
 blockfrost = "0.2.1"
 ipfs-api = "0.17.0"
 ipfs-api-backend-hyper = "0.6"
+tokio = { version = "1", features = ["full"] }
