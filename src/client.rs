@@ -10,13 +10,6 @@ pub struct Client {
     metadata_url: &'static str,
 }
 
-fn build_block_frost_api(project_id: &str) -> blockfrost::Result<BlockFrostApi> {
-    let configurations = load::configurations_from_env()?;
-    let project_id = configurations[project_id].as_str().unwrap();
-    let api = BlockFrostApi::new(project_id, Default::default());
-    Ok(api)
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CollectionMetadata;
 
@@ -25,34 +18,45 @@ pub enum GetMetadataError {
     ToDo,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CreateClientError {
-    MissingBlockFrostProjectId,
-    BlockFrostError(blockfrost::Error),
-}
-
-impl From<blockfrost::Error> for CreateClientError {
-    fn from(value: blockfrost::Error) -> Self {
-        CreateClientError::BlockFrostError(value)
-    }
+    MissingProjectId,
+    InvalidProjectId,
 }
 
 impl Client {
-    pub fn new(
-        block_frost_project_id: Option<&'static str>,
-        metadata_url: Option<&'static str>,
-    ) -> Result<Self, CreateClientError> {
-        Ok(Client {
+    pub fn new() -> Result<Self, CreateClientError> {
+        let project_id =
+            std::env::var("BLOCKFROST_PROJECT_ID").or(Err(CreateClientError::MissingProjectId))?;
+        Ok(Client::with_project_id(&project_id))
+    }
+
+    pub fn with_project_id(blockfrost_project_id: &str) -> Self {
+        Client {
             ipfs_client: IpfsClient::default(),
-            blockfrost_client: build_block_frost_api(
-                block_frost_project_id.ok_or(CreateClientError::MissingBlockFrostProjectId)?,
-            )?
-            .into(),
-            metadata_url: metadata_url.unwrap_or(METADATA_URL),
-        })
+            blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
+            metadata_url: METADATA_URL,
+        }
     }
 
     pub async fn get_metadata(&self) -> Result<CollectionMetadata, GetMetadataError> {
         Ok(CollectionMetadata)
     }
+}
+
+#[cfg(test)]
+pub fn load_project_id() -> String {
+    std::env::var("BLOCKFROST_PROJECT_ID")
+        .expect("environment variable `BLOCKFROST_PROJECT_ID` must be specified to run test suite")
+}
+
+#[test]
+fn test_client_with_project_id() {
+    let blockfrost_project_id = load_project_id();
+    Client::with_project_id(&blockfrost_project_id);
+}
+
+#[test]
+fn test_invalid_project_id_does_not_panic() {
+    Client::with_project_id("abcd");
 }
