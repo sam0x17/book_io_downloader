@@ -60,3 +60,9 @@ fn test_client_with_project_id() {
 fn test_invalid_project_id_does_not_panic() {
     Client::with_project_id("abcd");
 }
+
+#[test]
+fn test_auto_load_project_id() {
+    load_project_id();
+    Client::new().unwrap();
+}
