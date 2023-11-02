@@ -47,20 +47,53 @@ impl Client {
     pub async fn download_covers_for_policy(
         &self,
         policy_id: &str,
+        num_covers: usize,
     ) -> Result<CollectionMetadata, GetMetadataError> {
-        let asset = self.blockfrost_client.assets_by_id(policy_id).await?;
-        let tx = self
-            .blockfrost_client
-            .assets_transactions_all(&asset.asset)
-            .collect::<Vec<_>>()
-            .await;
+        let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
+        //                                             ^ this should be named
+        //                                             assets_by_policy_id_all, smh
+
+        // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
+        // until we reach the end of the stream. We could use filter_map but this would result
+        // in more allocations, and we only care about the first `num_covers` matching assets.
+        let mut accumulated_assets = Vec::new();
+        while accumulated_assets.len() < num_covers {
+            let Some(result) = assets_stream.next().await else {
+                break;
+            };
+            for asset in result? {
+                // crazy that blockfrost exposes this merely as a String, such bad API
+                // client design, should be some sort of integer, luckily for our
+                // purposes we just need to check for equality with "0" so we are only
+                // looking at unburned assets
+                if asset.quantity != "0" {
+                    accumulated_assets.push(asset);
+                    if accumulated_assets.len() >= num_covers {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // let assets = self
+        //     .blockfrost_client
+        //     .assets_by_id_all(policy_id)
+        //     .take(10)
+        //     .collect::<Vec<_>>()
+        //     .await;
+        // let txs = self
+        //     .blockfrost_client
+        //     .assets_transactions_all(&asset.asset)
+        //     .take(10)
+        //     .collect::<Vec<_>>()
+        //     .await;
         // let metadata = self
         //     .blockfrost_client
         //     .transactions_metadata(
         //         "7d97631704481a7d38177423484fcf78964a29802db6b0d2880b814146364ee6",
         //     )
         //     .await?;
-        println!("{:#?}", tx);
+        println!("{:#?}", accumulated_assets);
         Ok(CollectionMetadata)
     }
 }
@@ -95,7 +128,7 @@ async fn test_download_covers() {
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
     let client = Client::new().unwrap();
     client
-        .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID)
+        .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5)
         .await
         .unwrap();
 }
