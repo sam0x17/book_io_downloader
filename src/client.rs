@@ -15,13 +15,18 @@ pub struct CollectionMetadata;
 
 #[derive(Debug)]
 pub enum GetMetadataError {
-    ToDo,
+    BlockFrost(blockfrost::Error),
+}
+
+impl From<blockfrost::Error> for GetMetadataError {
+    fn from(value: blockfrost::Error) -> Self {
+        GetMetadataError::BlockFrost(value)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CreateClientError {
     MissingProjectId,
-    InvalidProjectId,
 }
 
 impl Client {
@@ -39,20 +44,24 @@ impl Client {
         }
     }
 
-    pub async fn get_metadata(&self) -> Result<CollectionMetadata, GetMetadataError> {
-        Ok(CollectionMetadata)
-    }
-
-    pub async fn is_collection_id_valid(
+    pub async fn download_covers_for_policy(
         &self,
-        collection_id: &str,
-    ) -> Result<bool, blockfrost::Error> {
-        self.blockfrost_client
-            .assets_all()
-            .any(|assets| async move {
-                let assets = asset.unwrap();
-                asset.hello()
-            })
+        policy_id: &str,
+    ) -> Result<CollectionMetadata, GetMetadataError> {
+        let asset = self.blockfrost_client.assets_by_id(policy_id).await?;
+        let tx = self
+            .blockfrost_client
+            .assets_transactions_all(&asset.asset)
+            .collect::<Vec<_>>()
+            .await;
+        // let metadata = self
+        //     .blockfrost_client
+        //     .transactions_metadata(
+        //         "7d97631704481a7d38177423484fcf78964a29802db6b0d2880b814146364ee6",
+        //     )
+        //     .await?;
+        println!("{:#?}", tx);
+        Ok(CollectionMetadata)
     }
 }
 
@@ -77,4 +86,16 @@ fn test_invalid_project_id_does_not_panic() {
 fn test_auto_load_project_id() {
     load_project_id();
     Client::new().unwrap();
+}
+
+#[tokio::test]
+async fn test_download_covers() {
+    load_project_id();
+    const THE_WIZARD_TIM_POLICY_ID: &'static str =
+        "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
+    let client = Client::new().unwrap();
+    client
+        .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID)
+        .await
+        .unwrap();
 }
