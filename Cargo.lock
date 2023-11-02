@@ -104,6 +104,7 @@ name = "book_io_downloader"
 version = "0.1.0"
 dependencies = [
  "blockfrost",
+ "futures",
  "ipfs-api",
  "ipfs-api-backend-hyper",
  "tokio",

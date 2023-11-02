@@ -1,4 +1,5 @@
 use blockfrost::{load, stream::StreamExt, BlockFrostApi};
+use futures::stream;
 use ipfs_api::IpfsClient;
 
 pub const METADATA_URL: &'static str = "https://api.book.io/api/v0/collections";
@@ -37,6 +38,11 @@ impl Client {
     }
 
     pub fn with_project_id(blockfrost_project_id: &str) -> Self {
+        // note that BlockFrost claims that their `new` method will panic if there is an
+        // invalid project ID. I have tested this and it is actually incorrect, instead you see
+        // this later as an error when you go to do something with the `BlockFrostApi` object,
+        // so that is why this method is infallible. I had hoped to be able to return an
+        // `InvalidProjectId` error variant here but alas, no.
         Client {
             ipfs_client: IpfsClient::default(),
             blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
@@ -49,13 +55,11 @@ impl Client {
         policy_id: &str,
         num_covers: usize,
     ) -> Result<CollectionMetadata, GetMetadataError> {
-        let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
-        //                                             ^ this should be named
-        //                                             assets_by_policy_id_all, smh
-
         // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
         // until we reach the end of the stream. We could use filter_map but this would result
-        // in more allocations, and we only care about the first `num_covers` matching assets.
+        // in more allocations, and we only care about the first `num_covers` matching assets
+        // so more efficient to manually break early while looping over individual batches.
+        let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
         let mut accumulated_assets = Vec::new();
         while accumulated_assets.len() < num_covers {
             let Some(result) = assets_stream.next().await else {
@@ -65,7 +69,8 @@ impl Client {
                 // crazy that blockfrost exposes this merely as a String, such bad API
                 // client design, should be some sort of integer, luckily for our
                 // purposes we just need to check for equality with "0" so we are only
-                // looking at unburned assets
+                // looking at unburned assets. If we needed to do a more complex inequality
+                // we'd need to parse the integer ourselves.
                 if asset.quantity != "0" {
                     accumulated_assets.push(asset);
                     if accumulated_assets.len() >= num_covers {
@@ -74,6 +79,16 @@ impl Client {
                 }
             }
         }
+
+        // convert each `AssetPolicy` to an `Asset` and get its minting transaction hash
+        let assets_stream =
+            stream::iter(accumulated_assets.into_iter()).then(|asset_policy| async move {
+                self.blockfrost_client
+                    .assets_by_id(&asset_policy.asset)
+                    .await
+            });
+
+        let assets: Vec<_> = assets_stream.collect().await;
 
         // let assets = self
         //     .blockfrost_client
@@ -93,7 +108,7 @@ impl Client {
         //         "7d97631704481a7d38177423484fcf78964a29802db6b0d2880b814146364ee6",
         //     )
         //     .await?;
-        println!("{:#?}", accumulated_assets);
+        println!("{:#?}", assets);
         Ok(CollectionMetadata)
     }
 }
