@@ -1,4 +1,4 @@
-use blockfrost::{load, stream::StreamExt, BlockFrostApi};
+use blockfrost::{load, stream::StreamExt, BlockFrostApi, JsonValue};
 use futures::stream;
 use ipfs_api::IpfsClient;
 
@@ -17,6 +17,22 @@ pub struct CollectionMetadata;
 #[derive(Debug)]
 pub enum GetMetadataError {
     BlockFrost(blockfrost::Error),
+    MetadataMissing {
+        asset_id: String,
+    },
+    MetadataFilesMissing {
+        asset_id: String,
+    },
+    MetadataFileInvalid {
+        asset_id: String,
+        message: &'static str,
+    },
+    MetadataFilesEmpty {
+        asset_id: String,
+    },
+    MetadataFilesMissingHighResImage {
+        asset_id: String,
+    },
 }
 
 impl From<blockfrost::Error> for GetMetadataError {
@@ -59,6 +75,7 @@ impl Client {
         // until we reach the end of the stream. We could use filter_map but this would result
         // in more allocations, and we only care about the first `num_covers` matching assets
         // so more efficient to manually break early while looping over individual batches.
+        // This also simplifies the error handling.
         let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
         let mut accumulated_assets = Vec::new();
         while accumulated_assets.len() < num_covers {
@@ -66,13 +83,8 @@ impl Client {
                 break;
             };
             for asset in result? {
-                // crazy that blockfrost exposes this merely as a String, such bad API
-                // client design, should be some sort of integer, luckily for our
-                // purposes we just need to check for equality with "0" so we are only
-                // looking at unburned assets. If we needed to do a more complex inequality
-                // we'd need to parse the integer ourselves.
                 if asset.quantity != "0" {
-                    accumulated_assets.push(asset);
+                    accumulated_assets.push(asset.asset);
                     if accumulated_assets.len() >= num_covers {
                         break;
                     }
@@ -80,35 +92,62 @@ impl Client {
             }
         }
 
-        // convert each `AssetPolicy` to an `Asset` and get its minting transaction hash
-        let assets_stream =
-            stream::iter(accumulated_assets.into_iter()).then(|asset_policy| async move {
-                self.blockfrost_client
-                    .assets_by_id(&asset_policy.asset)
-                    .await
-            });
+        // transform each asset_id into a pair of (src, media_type) representing the high-res
+        // image for that asset
+        for asset_id in accumulated_assets {
+            let asset = self.blockfrost_client.assets_by_id(&asset_id).await?;
+            let Some(metadata) = asset.onchain_metadata else {
+                return Err(GetMetadataError::MetadataMissing { asset_id });
+            };
+            let Some(files) = metadata.get("files") else {
+                return Err(GetMetadataError::MetadataFilesMissing { asset_id });
+            };
+            let Some(files) = files.as_array() else {
+                return Err(GetMetadataError::MetadataFileInvalid {
+                    asset_id,
+                    message: "the value for the `files` key must be an Array",
+                });
+            };
+            if files.is_empty() {
+                return Err(GetMetadataError::MetadataFilesEmpty { asset_id });
+            }
+            let mut high_res_ipfs_asset = None;
+            for file in files {
+                let Some(file) = file.as_object() else {
+                    return Err(GetMetadataError::MetadataFileInvalid {
+                        asset_id,
+                        message: "each element of the `files` array must be an Object",
+                    });
+                };
+                let Some(JsonValue::String(name)) = file.get("name") else {
+                    return Err(GetMetadataError::MetadataFileInvalid {
+                        asset_id,
+                        message: "each file in the files array must have a String `name` key",
+                    });
+                };
+                let Some(JsonValue::String(media_type)) = file.get("mediaType") else {
+                    return Err(GetMetadataError::MetadataFileInvalid {
+                        asset_id,
+                        message: "each file in the files array must have a String `mediaType` key",
+                    });
+                };
+                let Some(JsonValue::String(src)) = file.get("src") else {
+                    return Err(GetMetadataError::MetadataFileInvalid {
+                        asset_id,
+                        message: "each file in the files array must have a String `src` key",
+                    });
+                };
+                if name == "High-Res Cover Image" {
+                    high_res_ipfs_asset = Some((src, media_type));
+                    break;
+                }
+            }
+            let Some((src, media_type)) = high_res_ipfs_asset else {
+                return Err(GetMetadataError::MetadataFilesMissingHighResImage { asset_id });
+            };
+            // we now have an ipfs src and media_type for the high-res image for this asset
+        }
 
-        let assets: Vec<_> = assets_stream.collect().await;
-
-        // let assets = self
-        //     .blockfrost_client
-        //     .assets_by_id_all(policy_id)
-        //     .take(10)
-        //     .collect::<Vec<_>>()
-        //     .await;
-        // let txs = self
-        //     .blockfrost_client
-        //     .assets_transactions_all(&asset.asset)
-        //     .take(10)
-        //     .collect::<Vec<_>>()
-        //     .await;
-        // let metadata = self
-        //     .blockfrost_client
-        //     .transactions_metadata(
-        //         "7d97631704481a7d38177423484fcf78964a29802db6b0d2880b814146364ee6",
-        //     )
-        //     .await?;
-        println!("{:#?}", assets);
         Ok(CollectionMetadata)
     }
 }
