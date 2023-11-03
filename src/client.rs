@@ -21,9 +21,36 @@ pub struct Client {
 pub struct CollectionMetadata;
 
 #[derive(Debug)]
+pub enum DownloadErrorInner {
+    IpfsError(ipfs_api::Error),
+    IoError(std::io::Error),
+}
+
+impl From<ipfs_api::Error> for DownloadErrorInner {
+    fn from(value: ipfs_api::Error) -> Self {
+        DownloadErrorInner::IpfsError(value)
+    }
+}
+
+impl From<std::io::Error> for DownloadErrorInner {
+    fn from(value: std::io::Error) -> Self {
+        DownloadErrorInner::IoError(value)
+    }
+}
+
+#[derive(Debug)]
 pub struct DownloadError {
-    cid: String,
-    error: Box<dyn std::error::Error>,
+    pub cid: String,
+    pub error: DownloadErrorInner,
+}
+
+impl DownloadError {
+    pub fn from<C: AsRef<str>, E: Into<DownloadErrorInner>>(cid: C, error: E) -> Self {
+        DownloadError {
+            cid: cid.as_ref().to_owned(),
+            error: error.into(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -207,9 +234,9 @@ impl Client {
 
         // collect any errors from the download tasks and return, if applicable
         let mut errors = Vec::new();
-        while let Some((cid, result)) = rx.recv().await {
-            if let Err(error) = result {
-                errors.push(DownloadError { cid, error });
+        while let Some(result) = rx.recv().await {
+            if let (cid, Err(error)) = result {
+                errors.push(DownloadError::from(cid, error));
             }
         }
         if !errors.is_empty() {
@@ -225,7 +252,7 @@ async fn download_single_file_with_progress(
     cid: &str,
     dest_path: &Path,
     pb: &ProgressBar,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), DownloadErrorInner> {
     let mut file = File::create(dest_path).await?;
     let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
 
