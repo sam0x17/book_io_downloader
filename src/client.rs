@@ -86,10 +86,7 @@ impl Client {
         target_dir: &Path,
     ) -> Result<CollectionMetadata, DownloadCoversError> {
         // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
-        // until we reach the end of the stream. We could use filter_map but this would result
-        // in more allocations, and we only care about the first `num_covers` matching assets
-        // so more efficient to manually break early while looping over individual batches.
-        // This also simplifies the error handling.
+        // until we reach the end of the stream.
         let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
         let mut accumulated_assets = Vec::new();
         while accumulated_assets.len() < num_covers {
@@ -170,25 +167,6 @@ impl Client {
         Ok(CollectionMetadata)
     }
 
-    async fn download_single_file_with_progress(
-        ipfs_client: &IpfsClient,
-        cid: &str,
-        dest_path: &Path,
-        pb: &ProgressBar,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = File::create(dest_path).await?;
-        let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
-
-        while let Some(chunk) = stream.next().await {
-            let data = chunk?;
-            pb.inc(data.len() as u64);
-            file.write_all(&data).await?;
-        }
-        file.flush().await?;
-
-        Ok(())
-    }
-
     async fn download_files(
         &self,
         files: Vec<(String, PathBuf)>,
@@ -213,8 +191,7 @@ impl Client {
 
             local_set.spawn_local(async move {
                 let result =
-                    Client::download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb)
-                        .await;
+                    download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb).await;
                 // Send the result back to the main task
                 if tx.send((cid, result)).await.is_err() {
                     eprintln!("Failed to send result back to the main task");
@@ -241,6 +218,25 @@ impl Client {
 
         Ok(())
     }
+}
+
+async fn download_single_file_with_progress(
+    ipfs_client: &IpfsClient,
+    cid: &str,
+    dest_path: &Path,
+    pb: &ProgressBar,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = File::create(dest_path).await?;
+    let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
+
+    while let Some(chunk) = stream.next().await {
+        let data = chunk?;
+        pb.inc(data.len() as u64);
+        file.write_all(&data).await?;
+    }
+    file.flush().await?;
+
+    Ok(())
 }
 
 fn src_to_cid<S: AsRef<str>>(src: S) -> String {
