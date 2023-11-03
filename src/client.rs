@@ -5,7 +5,8 @@ use ipfs_api_backend_hyper::IpfsApi;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::{self, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 pub const METADATA_URL: &'static str = "https://api.book.io/api/v0/collections";
 
@@ -170,56 +171,73 @@ impl Client {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::create(dest_path).await?;
         let mut stream = ipfs_client.cat(src);
-    
+
         while let Some(chunk) = stream.next().await {
             let data = chunk?;
+            println!("SOME DATA: {}", data.len());
             pb.inc(data.len() as u64);
             file.write_all(&data).await?;
         }
-    
+        file.flush().await?;
+
         Ok(())
     }
 
-    async fn download_files(&self, files: Vec<(String, PathBuf)>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn download_files(
+        &self,
+        files: Vec<(String, PathBuf)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let multi_progress = Arc::new(MultiProgress::new());
-        
-        let handles: Vec<_> = files.into_iter().map(|(src, dest_path)| {
-            let pb = multi_progress.add(ProgressBar::new(0)); // Setting to 0 initially, as we don't know the total size
+        let local_set = tokio::task::LocalSet::new(); // Create a LocalSet for local tasks.
+
+        // Create a channel to send results of the download tasks
+        let (tx, mut rx) = mpsc::channel(files.len());
+
+        for (src, dest_path) in files {
+            let pb = multi_progress.add(ProgressBar::new(0));
             let pb_style = ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                .unwrap()
-                .progress_chars("#>-");
-            
+            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("#>-");
             pb.set_style(pb_style);
-    
-            let ipfs_client = self.ipfs_client.clone(); // Assuming the client can be cloned, adjust if needed
-        
-            tokio::task::spawn_local(async move {
-                match Client::download_single_file_with_progress(&ipfs_client, &src, &dest_path, &pb).await {
-                    Ok(_) => {
-                        pb.finish_with_message("download completed");
-                    }
-                    Err(e) => {
-                        pb.finish_with_message(format!("download failed: {}", e));
-                    }
+
+            let ipfs_client = self.ipfs_client.clone();
+            let tx = tx.clone(); // Clone the transmitter for the task
+
+            // Use LocalSet's spawn_local method.
+            local_set.spawn_local(async move {
+                let result =
+                    Client::download_single_file_with_progress(&ipfs_client, &src, &dest_path, &pb)
+                        .await;
+                // Send the result back to the main task
+                if tx.send(result).await.is_err() {
+                    eprintln!("Failed to send result back to the main task");
                 }
-            })
-        }).collect();
-    
-        // Awaiting individual download tasks
-        for handle in handles {
-            handle.await?;
+            });
         }
-    
+
+        // Drop the original transmitter so the channel can close once all tasks are done
+        drop(tx);
+
+        // Run the local set until completion.
+        local_set.await;
+
+        // Collect any errors from the download tasks
+        let mut errors = Vec::new();
+        while let Some(result) = rx.recv().await {
+            match result {
+                Ok(_) => {}
+                Err(e) => errors.push(e),
+            }
+        }
+
+        // If there were any errors, return the first one
+        if let Some(error) = errors.into_iter().next() {
+            return Err(error);
+        }
+
         Ok(())
     }
-
-    
-    
-    
-    
-    
-
 }
 
 #[cfg(test)]
