@@ -165,12 +165,11 @@ impl Client {
 
     async fn download_single_file_with_progress(
         ipfs_client: &IpfsClient,
-        src: &str,
+        cid: &str,
         dest_path: &Path,
         pb: &ProgressBar,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::create(dest_path).await?;
-        let cid = src_to_cid(src);
         let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
 
         while let Some(chunk) = stream.next().await {
@@ -194,6 +193,7 @@ impl Client {
         let (tx, mut rx) = mpsc::channel(files.len());
 
         for (src, dest_path) in files {
+            let cid = src_to_cid(src);
             let pb = multi_progress.add(ProgressBar::new(0));
             let pb_style = ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
@@ -207,7 +207,7 @@ impl Client {
             // Use LocalSet's spawn_local method.
             local_set.spawn_local(async move {
                 let result =
-                    Client::download_single_file_with_progress(&ipfs_client, &src, &dest_path, &pb)
+                    Client::download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb)
                         .await;
                 // Send the result back to the main task
                 if tx.send(result).await.is_err() {
