@@ -15,6 +15,7 @@ pub struct Client {
     ipfs_client: IpfsClient,
     blockfrost_client: BlockFrostApi,
     metadata_url: &'static str,
+    slow: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -81,6 +82,12 @@ impl From<blockfrost::Error> for DownloadCoversError {
     }
 }
 
+impl From<DownloadError> for DownloadCoversError {
+    fn from(value: DownloadError) -> Self {
+        DownloadCoversError::DownloadErrors(vec![value])
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CreateClientError {
     MissingProjectId,
@@ -103,6 +110,7 @@ impl Client {
             ipfs_client: IpfsClient::default(),
             blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
             metadata_url: METADATA_URL,
+            slow: false,
         }
     }
 
@@ -206,7 +214,12 @@ impl Client {
 
         for (src, dest_path) in files {
             let cid = src_to_cid(src);
-            let pb = multi_progress.add(ProgressBar::new(0));
+            // stat object so we can calibrate the progress bar
+            let stat = match self.ipfs_client.object_stat(&cid).await {
+                Ok(stat) => stat,
+                Err(err) => Err(DownloadError::from(&cid, err))?,
+            };
+            let pb = multi_progress.add(ProgressBar::new(stat.cumulative_size).with_position(0));
             let pb_style = ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
             .unwrap()
@@ -215,10 +228,12 @@ impl Client {
 
             let ipfs_client = self.ipfs_client.clone();
             let tx = tx.clone();
+            let slow = self.slow;
 
             local_set.spawn_local(async move {
                 let result =
-                    download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb).await;
+                    download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb, slow)
+                        .await;
                 // Send the result back to the main task
                 if tx.send((cid, result)).await.is_err() {
                     eprintln!("Failed to send result back to the main task");
@@ -252,6 +267,7 @@ async fn download_single_file_with_progress(
     cid: &str,
     dest_path: &Path,
     pb: &ProgressBar,
+    slow: bool,
 ) -> Result<(), DownloadErrorInner> {
     let mut file = File::create(dest_path).await?;
     let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
@@ -260,6 +276,9 @@ async fn download_single_file_with_progress(
         let data = chunk?;
         pb.inc(data.len() as u64);
         file.write_all(&data).await?;
+        if slow {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
     file.flush().await?;
 
@@ -304,7 +323,8 @@ async fn test_download_covers() {
     load_project_id();
     const THE_WIZARD_TIM_POLICY_ID: &'static str =
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
-    let client = Client::new().unwrap();
+    let mut client = Client::new().unwrap();
+    client.slow = true;
     client
         .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &PathBuf::from("/tmp"))
         .await
