@@ -193,7 +193,10 @@ impl Client {
                 return Err(DownloadCoversError::MetadataFilesMissingHighResImage { asset_id });
             };
             // we now have an ipfs src and media_type for the high-res image for this asset
-            download_targets.push((src.clone(), target_dir.join(format!("{asset_id}.png"))));
+
+            // queue download
+            let ext = extension_for(media_type);
+            download_targets.push((src.clone(), target_dir.join(format!("{asset_id}.{ext}"))));
         }
 
         // start all downloads in parallel
@@ -295,10 +298,39 @@ fn src_to_cid<S: AsRef<str>>(src: S) -> String {
     format!("/ipfs/{cid}")
 }
 
+fn extension_for<S: AsRef<str>>(mime_string: S) -> &'static str {
+    match mime_string.as_ref().to_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/gif" | "image/vnd.compuserve.gif" => "gif",
+        "image/webp" => "webp",
+        "image/x-canon-cr2" | "image/cr2" => "cr2",
+        "image/tiff" | "image/tif" => "tif",
+        "image/bmp" | "image/vnd.microsoft.bitmap" => "bmp",
+        "image/heif" => "heif",
+        "image/avif" => "avif",
+        "image/vnd.ms-photo" | "image/jxr" => "jxr",
+        "image/vnd.adobe.photoshop" | "image/psd" => "psd",
+        "image/vnd.microsoft.icon" | "image/ico" => "ico",
+        "image/openraster" | "image/ora" => "ora",
+        _ => "png",
+    }
+}
+
 #[cfg(test)]
 pub fn load_project_id() -> String {
     std::env::var("BLOCKFROST_PROJECT_ID")
         .expect("environment variable `BLOCKFROST_PROJECT_ID` must be specified to run test suite")
+}
+
+#[test]
+fn test_extension_for() {
+    assert_eq!(extension_for("image/png"), "png");
+    assert_eq!(extension_for("image/PNG"), "png");
+    assert_eq!(extension_for("image/jpeg"), "jpg");
+    assert_eq!(extension_for("image/vnd.microsoft.bitmap"), "bmp");
+    assert_eq!(extension_for("image/bmp"), "bmp");
+    assert_eq!(extension_for("image/vnd.adobe.photoshop"), "psd");
 }
 
 #[test]
@@ -324,7 +356,7 @@ async fn test_download_covers() {
     const THE_WIZARD_TIM_POLICY_ID: &'static str =
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
     let mut client = Client::new().unwrap();
-    client.slow = true;
+    client.slow = false;
     client
         .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &PathBuf::from("/tmp"))
         .await
