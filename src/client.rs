@@ -21,7 +21,13 @@ pub struct Client {
 pub struct CollectionMetadata;
 
 #[derive(Debug)]
-pub enum GetMetadataError {
+pub struct DownloadError {
+    cid: String,
+    error: Box<dyn std::error::Error>,
+}
+
+#[derive(Debug)]
+pub enum DownloadCoversError {
     BlockFrost(blockfrost::Error),
     MetadataMissing {
         asset_id: String,
@@ -39,11 +45,12 @@ pub enum GetMetadataError {
     MetadataFilesMissingHighResImage {
         asset_id: String,
     },
+    DownloadErrors(Vec<DownloadError>),
 }
 
-impl From<blockfrost::Error> for GetMetadataError {
+impl From<blockfrost::Error> for DownloadCoversError {
     fn from(value: blockfrost::Error) -> Self {
-        GetMetadataError::BlockFrost(value)
+        DownloadCoversError::BlockFrost(value)
     }
 }
 
@@ -77,7 +84,7 @@ impl Client {
         policy_id: &str,
         num_covers: usize,
         target_dir: &Path,
-    ) -> Result<CollectionMetadata, GetMetadataError> {
+    ) -> Result<CollectionMetadata, DownloadCoversError> {
         // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
         // until we reach the end of the stream. We could use filter_map but this would result
         // in more allocations, and we only care about the first `num_covers` matching assets
@@ -105,42 +112,42 @@ impl Client {
         for asset_id in accumulated_assets {
             let asset = self.blockfrost_client.assets_by_id(&asset_id).await?;
             let Some(metadata) = asset.onchain_metadata else {
-                return Err(GetMetadataError::MetadataMissing { asset_id });
+                return Err(DownloadCoversError::MetadataMissing { asset_id });
             };
             let Some(files) = metadata.get("files") else {
-                return Err(GetMetadataError::MetadataFilesMissing { asset_id });
+                return Err(DownloadCoversError::MetadataFilesMissing { asset_id });
             };
             let Some(files) = files.as_array() else {
-                return Err(GetMetadataError::MetadataFileInvalid {
+                return Err(DownloadCoversError::MetadataFileInvalid {
                     asset_id,
                     message: "the value for the `files` key must be an Array",
                 });
             };
             if files.is_empty() {
-                return Err(GetMetadataError::MetadataFilesEmpty { asset_id });
+                return Err(DownloadCoversError::MetadataFilesEmpty { asset_id });
             }
             let mut high_res_ipfs_asset = None;
             for file in files {
                 let Some(file) = file.as_object() else {
-                    return Err(GetMetadataError::MetadataFileInvalid {
+                    return Err(DownloadCoversError::MetadataFileInvalid {
                         asset_id,
                         message: "each element of the `files` array must be an Object",
                     });
                 };
                 let Some(JsonValue::String(name)) = file.get("name") else {
-                    return Err(GetMetadataError::MetadataFileInvalid {
+                    return Err(DownloadCoversError::MetadataFileInvalid {
                         asset_id,
                         message: "each file in the files array must have a String `name` key",
                     });
                 };
                 let Some(JsonValue::String(media_type)) = file.get("mediaType") else {
-                    return Err(GetMetadataError::MetadataFileInvalid {
+                    return Err(DownloadCoversError::MetadataFileInvalid {
                         asset_id,
                         message: "each file in the files array must have a String `mediaType` key",
                     });
                 };
                 let Some(JsonValue::String(src)) = file.get("src") else {
-                    return Err(GetMetadataError::MetadataFileInvalid {
+                    return Err(DownloadCoversError::MetadataFileInvalid {
                         asset_id,
                         message: "each file in the files array must have a String `src` key",
                     });
@@ -151,14 +158,14 @@ impl Client {
                 }
             }
             let Some((src, media_type)) = high_res_ipfs_asset else {
-                return Err(GetMetadataError::MetadataFilesMissingHighResImage { asset_id });
+                return Err(DownloadCoversError::MetadataFilesMissingHighResImage { asset_id });
             };
             // we now have an ipfs src and media_type for the high-res image for this asset
             download_targets.push((src.clone(), target_dir.join(format!("{asset_id}.png"))));
         }
 
         // start all downloads in parallel
-        self.download_files(download_targets).await.unwrap();
+        self.download_files(download_targets).await?;
 
         Ok(CollectionMetadata)
     }
@@ -185,11 +192,11 @@ impl Client {
     async fn download_files(
         &self,
         files: Vec<(String, PathBuf)>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), DownloadCoversError> {
         let multi_progress = Arc::new(MultiProgress::new());
         let local_set = tokio::task::LocalSet::new(); // Create a LocalSet for local tasks.
 
-        // Create a channel to send results of the download tasks
+        // create a channel to send results of the download tasks to parent thread
         let (tx, mut rx) = mpsc::channel(files.len());
 
         for (src, dest_path) in files {
@@ -202,38 +209,34 @@ impl Client {
             pb.set_style(pb_style);
 
             let ipfs_client = self.ipfs_client.clone();
-            let tx = tx.clone(); // Clone the transmitter for the task
+            let tx = tx.clone();
 
-            // Use LocalSet's spawn_local method.
             local_set.spawn_local(async move {
                 let result =
                     Client::download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb)
                         .await;
                 // Send the result back to the main task
-                if tx.send(result).await.is_err() {
+                if tx.send((cid, result)).await.is_err() {
                     eprintln!("Failed to send result back to the main task");
                 }
             });
         }
 
-        // Drop the original transmitter so the channel can close once all tasks are done
+        // drop the original transmitter so the channel can close once all tasks are done
         drop(tx);
 
-        // Run the local set until completion.
+        // run the local set until completion.
         local_set.await;
 
-        // Collect any errors from the download tasks
+        // collect any errors from the download tasks and return, if applicable
         let mut errors = Vec::new();
-        while let Some(result) = rx.recv().await {
-            match result {
-                Ok(_) => {}
-                Err(e) => errors.push(e),
+        while let Some((cid, result)) = rx.recv().await {
+            if let Err(error) = result {
+                errors.push(DownloadError { cid, error });
             }
         }
-
-        // If there were any errors, return the first one
-        if let Some(error) = errors.into_iter().next() {
-            return Err(error);
+        if !errors.is_empty() {
+            return Err(DownloadCoversError::DownloadErrors(errors));
         }
 
         Ok(())
