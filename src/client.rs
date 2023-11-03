@@ -170,12 +170,8 @@ impl Client {
         pb: &ProgressBar,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::create(dest_path).await?;
-        let cid = if src.starts_with("ipfs://") {
-            &src[7..]
-        } else {
-            &src[..]
-        };
-        let mut stream = ipfs_client.cat(&format!("/ipfs/{}", cid));
+        let cid = src_to_cid(src);
+        let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
 
         while let Some(chunk) = stream.next().await {
             let data = chunk?;
@@ -242,6 +238,16 @@ impl Client {
 
         Ok(())
     }
+}
+
+fn src_to_cid<S: AsRef<str>>(src: S) -> String {
+    let src = src.as_ref();
+    let cid = if src.starts_with("ipfs://") {
+        &src[7..]
+    } else {
+        &src[..]
+    };
+    format!("/ipfs/{cid}")
 }
 
 #[cfg(test)]
