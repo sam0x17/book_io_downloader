@@ -1,6 +1,11 @@
-use blockfrost::{load, stream::StreamExt, BlockFrostApi, JsonValue};
-use futures::stream;
+use blockfrost::{stream::StreamExt, BlockFrostApi, JsonValue};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ipfs_api::IpfsClient;
+use ipfs_api_backend_hyper::IpfsApi;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::fs::File;
+use tokio::io::{self, AsyncWriteExt};
 
 pub const METADATA_URL: &'static str = "https://api.book.io/api/v0/collections";
 
@@ -70,6 +75,7 @@ impl Client {
         &self,
         policy_id: &str,
         num_covers: usize,
+        target_dir: &Path,
     ) -> Result<CollectionMetadata, GetMetadataError> {
         // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
         // until we reach the end of the stream. We could use filter_map but this would result
@@ -94,6 +100,7 @@ impl Client {
 
         // transform each asset_id into a pair of (src, media_type) representing the high-res
         // image for that asset
+        let mut download_targets = Vec::new();
         for asset_id in accumulated_assets {
             let asset = self.blockfrost_client.assets_by_id(&asset_id).await?;
             let Some(metadata) = asset.onchain_metadata else {
@@ -146,10 +153,73 @@ impl Client {
                 return Err(GetMetadataError::MetadataFilesMissingHighResImage { asset_id });
             };
             // we now have an ipfs src and media_type for the high-res image for this asset
+            download_targets.push((src.clone(), target_dir.join(format!("{asset_id}.png"))));
         }
+
+        // start all downloads in parallel
+        self.download_files(download_targets).await.unwrap();
 
         Ok(CollectionMetadata)
     }
+
+    async fn download_single_file_with_progress(
+        ipfs_client: &IpfsClient,
+        src: &str,
+        dest_path: &Path,
+        pb: &ProgressBar,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = File::create(dest_path).await?;
+        let mut stream = ipfs_client.cat(src);
+    
+        while let Some(chunk) = stream.next().await {
+            let data = chunk?;
+            pb.inc(data.len() as u64);
+            file.write_all(&data).await?;
+        }
+    
+        Ok(())
+    }
+
+    async fn download_files(&self, files: Vec<(String, PathBuf)>) -> Result<(), Box<dyn std::error::Error>> {
+        let multi_progress = Arc::new(MultiProgress::new());
+        
+        let handles: Vec<_> = files.into_iter().map(|(src, dest_path)| {
+            let pb = multi_progress.add(ProgressBar::new(0)); // Setting to 0 initially, as we don't know the total size
+            let pb_style = ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                .unwrap()
+                .progress_chars("#>-");
+            
+            pb.set_style(pb_style);
+    
+            let ipfs_client = self.ipfs_client.clone(); // Assuming the client can be cloned, adjust if needed
+        
+            tokio::task::spawn_local(async move {
+                match Client::download_single_file_with_progress(&ipfs_client, &src, &dest_path, &pb).await {
+                    Ok(_) => {
+                        pb.finish_with_message("download completed");
+                    }
+                    Err(e) => {
+                        pb.finish_with_message(format!("download failed: {}", e));
+                    }
+                }
+            })
+        }).collect();
+    
+        // Awaiting individual download tasks
+        for handle in handles {
+            handle.await?;
+        }
+    
+        Ok(())
+    }
+
+    
+    
+    
+    
+    
+
 }
 
 #[cfg(test)]
@@ -182,7 +252,7 @@ async fn test_download_covers() {
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
     let client = Client::new().unwrap();
     client
-        .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5)
+        .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &PathBuf::from("/tmp"))
         .await
         .unwrap();
 }
