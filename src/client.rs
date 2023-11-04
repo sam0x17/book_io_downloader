@@ -1,11 +1,13 @@
-use blockfrost::{stream::StreamExt, BlockFrostApi, JsonValue};
+use blockfrost::{BlockFrostApi, JsonValue};
+use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ipfs_api::IpfsClient;
 use ipfs_api_backend_hyper::IpfsApi;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 pub const METADATA_URL: &'static str = "https://api.book.io/api/v0/collections";
@@ -25,6 +27,7 @@ pub struct CollectionMetadata;
 pub enum DownloadErrorInner {
     IpfsError(ipfs_api::Error),
     IoError(std::io::Error),
+    CorruptDownload,
 }
 
 impl From<ipfs_api::Error> for DownloadErrorInner {
@@ -272,19 +275,75 @@ async fn download_single_file_with_progress(
     pb: &ProgressBar,
     slow: bool,
 ) -> Result<(), DownloadErrorInner> {
-    let mut file = File::create(dest_path).await?;
-    let mut stream = ipfs_client.cat(&cid); // do this in outer fn and stat first to get total size
+    // First, get the size of the file from IPFS
+    let stat = ipfs_client.object_stat(cid).await?;
+    let total_size = stat.cumulative_size;
+
+    // Check if file exists and its size
+    let mut start_byte = 0;
+    let file_exists = dest_path.exists();
+    if file_exists {
+        let metadata = tokio::fs::metadata(dest_path).await?;
+        start_byte = metadata.len();
+
+        // If file exists and is complete, set progress to 100% and return
+        if start_byte == total_size {
+            pb.finish_with_message("File already downloaded.");
+            return Ok(());
+        }
+    }
+
+    // Set the initial progress
+    pb.set_position(start_byte);
+
+    // Open or create the file, with write and read access
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(dest_path)
+        .await?;
+
+    // If the file exists but is incomplete, seek to the end of it
+    if file_exists {
+        file.seek(std::io::SeekFrom::End(0)).await?;
+    }
+
+    // Determine the remaining length to download.
+    let remaining_length = if total_size > start_byte {
+        total_size - start_byte
+    } else {
+        // The file is already complete
+        pb.finish_with_message("File already downloaded.");
+        return Ok(());
+    };
+
+    // Create the stream outside of the if condition.
+    let stream = ipfs_client
+        .cat_range(cid, start_byte as usize, remaining_length as usize)
+        .boxed_local(); // Use boxed_local to box the stream that is not Send.
+
+    // Use the StreamExt trait to call next on the stream.
+    futures::pin_mut!(stream); // Pin the stream to be able to call `next`.
 
     while let Some(chunk) = stream.next().await {
         let data = chunk?;
         pb.inc(data.len() as u64);
         file.write_all(&data).await?;
         if slow {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         }
     }
+
     file.flush().await?;
 
+    // Check final file size to ensure it's complete
+    let final_metadata = tokio::fs::metadata(dest_path).await?;
+    if final_metadata.len() != total_size {
+        return Err(DownloadErrorInner::CorruptDownload);
+    }
+
+    pb.finish_with_message("Download complete.");
     Ok(())
 }
 
@@ -356,7 +415,7 @@ async fn test_download_covers() {
     const THE_WIZARD_TIM_POLICY_ID: &'static str =
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
     let mut client = Client::new().unwrap();
-    client.slow = false;
+    client.slow = true;
     client
         .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &PathBuf::from("/tmp"))
         .await
