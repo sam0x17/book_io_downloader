@@ -379,6 +379,22 @@ pub fn load_project_id() -> String {
         .expect("environment variable `BLOCKFROST_PROJECT_ID` must be specified to run test suite")
 }
 
+#[cfg(test)]
+async fn with_temp_dir<F, Fut>(func: F) -> tokio::io::Result<()>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: futures::Future<Output = tokio::io::Result<()>>,
+{
+    let dir = tempdir::TempDir::new("book_io_download_tests")?; // Create a new temporary directory.
+    let dir_path = dir.path().to_path_buf();
+
+    // Run the async closure, passing the ownership of the PathBuf.
+    func(dir_path).await?;
+
+    // The temporary directory is automatically deleted when `dir` goes out of scope here.
+    Ok(())
+}
+
 #[test]
 fn test_extension_for() {
     assert_eq!(extension_for("image/png"), "png");
@@ -411,10 +427,17 @@ async fn test_download_covers() {
     load_project_id();
     const THE_WIZARD_TIM_POLICY_ID: &'static str =
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
-    let mut client = Client::new().unwrap();
-    client.slow = true;
-    client
-        .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &PathBuf::from("/tmp"))
-        .await
-        .unwrap();
+
+    with_temp_dir(|path| async move {
+        let mut client = Client::new().unwrap();
+
+        client.slow = true;
+        client
+            .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
+            .await
+            .unwrap();
+        Ok(())
+    })
+    .await
+    .unwrap();
 }
