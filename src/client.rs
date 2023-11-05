@@ -5,7 +5,6 @@ use ipfs_api::IpfsClient;
 use ipfs_api_backend_hyper::IpfsApi;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs::File;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -276,8 +275,7 @@ async fn download_single_file_with_progress(
     slow: bool,
 ) -> Result<(), DownloadErrorInner> {
     // calculate true size of file minus overhead
-    let stat = ipfs_client.object_stat(cid).await?;
-    let total_size = stat.cumulative_size - stat.block_size - stat.links_size;
+    let total_size = ipfs_client.files_stat(cid).await?.size;
 
     // check if file exists and its size
     let mut start_byte = 0;
@@ -429,9 +427,7 @@ async fn test_download_covers() {
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
 
     with_temp_dir(|path| async move {
-        let mut client = Client::new().unwrap();
-
-        client.slow = true;
+        let client = Client::new().unwrap();
         client
             .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
             .await
