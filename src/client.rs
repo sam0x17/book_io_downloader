@@ -275,28 +275,26 @@ async fn download_single_file_with_progress(
     pb: &ProgressBar,
     slow: bool,
 ) -> Result<(), DownloadErrorInner> {
-    // First, get the size of the file from IPFS
+    // calculate true size of file minus overhead
     let stat = ipfs_client.object_stat(cid).await?;
-    let total_size = stat.cumulative_size;
+    let total_size = stat.cumulative_size - stat.block_size - stat.links_size;
 
-    // Check if file exists and its size
+    // check if file exists and its size
     let mut start_byte = 0;
     let file_exists = dest_path.exists();
     if file_exists {
         let metadata = tokio::fs::metadata(dest_path).await?;
         start_byte = metadata.len();
 
-        // If file exists and is complete, set progress to 100% and return
+        // if file exists and is complete, set progress to 100% and return
         if start_byte == total_size {
             pb.finish_with_message("File already downloaded.");
             return Ok(());
         }
     }
 
-    // Set the initial progress
     pb.set_position(start_byte);
 
-    // Open or create the file, with write and read access
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -304,27 +302,26 @@ async fn download_single_file_with_progress(
         .open(dest_path)
         .await?;
 
-    // If the file exists but is incomplete, seek to the end of it
+    // if the file exists but is incomplete, seek to the end of it
     if file_exists {
         file.seek(std::io::SeekFrom::End(0)).await?;
     }
 
-    // Determine the remaining length to download.
+    // determine the remaining length to download.
     let remaining_length = if total_size > start_byte {
         total_size - start_byte
     } else {
-        // The file is already complete
         pb.finish_with_message("File already downloaded.");
         return Ok(());
     };
 
-    // Create the stream outside of the if condition.
+    // create the stream outside of the if condition.
     let stream = ipfs_client
         .cat_range(cid, start_byte as usize, remaining_length as usize)
         .boxed_local(); // Use boxed_local to box the stream that is not Send.
 
-    // Use the StreamExt trait to call next on the stream.
-    futures::pin_mut!(stream); // Pin the stream to be able to call `next`.
+    // use the StreamExt trait to call next on the stream.
+    futures::pin_mut!(stream); // pin the stream to be able to call `next`.
 
     while let Some(chunk) = stream.next().await {
         let data = chunk?;
@@ -337,8 +334,8 @@ async fn download_single_file_with_progress(
 
     file.flush().await?;
 
-    // Check final file size to ensure it's complete
     let final_metadata = tokio::fs::metadata(dest_path).await?;
+
     if final_metadata.len() != total_size {
         return Err(DownloadErrorInner::CorruptDownload);
     }
