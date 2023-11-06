@@ -1,3 +1,5 @@
+//! Contains the [`Client`] used by the `bicd` CLI utility and supporting types.
+
 use blockfrost::{BlockFrostApi, JsonValue};
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -14,39 +16,84 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+/// This is the default API url that will be used to check if a book policy_id/collection_id is
+/// valid.
+///
+/// This can be overridden by setting [`Client::book_api_url`] and must be set to a valid HTTP
+/// GET endpoint that returns a list of book collections that match the formatting dictated by
+/// [`CollectionResponse`] and [`Collection`].
 pub const BOOK_API_URL: &'static str = "https://api.book.io/api/v0/collections";
 
+/// Internal struct used to serialize/deserialize the top level response from
+/// [`Client::book_api_url`].
 #[derive(Deserialize, Debug)]
-struct CollectionResponse {
+pub struct CollectionResponse {
+    /// Should always be set to "success" if the request succeeded
     #[serde(rename = "type")]
-    response_type: String,
-    data: Vec<Collection>,
+    pub response_type: String,
+    /// Contains the actual [`Collection`]s that correspond with valid `policy_id`/`collection_id`s
+    pub data: Vec<Collection>,
 }
 
+/// Corresponds with an item within the [`CollectionResponse::data`] array.
+///
+/// Each [`Collection`] represents a collection of books on the specified
+/// [`Collection::blockchain`] and [`Collection::network`], where the
+/// [`Collection::collection_id`] is a valid `policy_id` in the specified blockchain/network
+/// pair.
 #[derive(Deserialize, Debug)]
-struct Collection {
-    collection_id: String,
+pub struct Collection {
+    /// A unique identifier for this collection that doubles as a `policy_id` or equivalent on
+    /// the blockchain network where this collection exists.
+    pub collection_id: String,
     #[allow(unused)]
-    description: String,
-    blockchain: String,
-    network: String,
+    /// Provides a short human-readable description of the [`Collection`].
+    pub description: String,
+    /// The blockchain (i.e. `cardano`) where this collection is hosted. Note that only
+    /// `cardano` is supported by this library.
+    pub blockchain: String,
+    /// The network (i.e. `mainnet`, `testnet`, etc) of the blockchain where this collection is
+    /// hosted.
+    pub network: String,
 }
 
+/// This is the main type that contains all functionality supported by the CLI. Anything the
+/// CLI can do can also be done with this public interface.
 #[derive(Clone)]
 pub struct Client {
     ipfs_client: IpfsClient,
     blockfrost_client: BlockFrostApi,
-    book_api_url: &'static str,
     valid_cids: HashSet<String>,
-    quiet: bool,
-    slow: bool,
-    simulate_early_kill: bool,
+    /// Should be the URL of an HTTP GET endpoint conforming to the JSON schema dictated by
+    /// [`CollectionResponse`].
+    ///
+    /// This API is used to determine whether a given `policy_id`/`collection_id` is valid
+    /// before trying to find it on Cardano.
+    pub book_api_url: &'static str,
+    /// If set to `true`, suppresses terminal-based progress bars and other output during file
+    /// downloads. Defaults to `false`.
+    pub quiet: bool,
+    /// If set to `true`, artificial sleeps are introduced to intentionally slow down downloads
+    /// to the point where it is easy to visually inspect the progress bars while
+    /// [`Client::download_covers_for_policy`] is running. Defaults to `false`.
+    pub slow: bool,
+    /// If set to `true`, will terminate particular downloads at random completion percents
+    /// when [`Client::download_covers_for_policy`] and/or [`Client::download_files`] is run.
+    ///
+    /// The downloads in question will act as if they are complete. Note that 100% and 0%
+    /// completion are both possible with how the random numbers are generated (and this is
+    /// intentional). This is useful for testing idempotence.
+    pub simulate_early_kill: bool,
 }
 
+/// Encapsulates errors that can be returned for a particular download.
 #[derive(Debug)]
 pub enum DownloadErrorInner {
+    /// An error occurred communicating with or downloading from the IPFS network.
     IpfsError(ipfs_api::Error),
+    /// An IO error occurred trying to write to the specified download destination path.
     IoError(std::io::Error),
+    /// The resulting downloaded file is of the wrong size.
     CorruptDownload,
 }
 
@@ -62,13 +109,19 @@ impl From<std::io::Error> for DownloadErrorInner {
     }
 }
 
+/// Annotates [`DownloadErrorInner`] with a `cid` field allowing us to know what download this
+/// error refers to.
 #[derive(Debug)]
 pub struct DownloadError {
+    /// The id of the cover for which this specific download failed.
     pub cid: String,
+    /// The error that occurred while trying to download the cover.
     pub error: DownloadErrorInner,
 }
 
 impl DownloadError {
+    /// Allows for easy construction of a [`DownloadError`] from a `cid` and something
+    /// compatible with [`DownloadErrorInner`].
     pub fn from<C: AsRef<str>, E: Into<DownloadErrorInner>>(cid: C, error: E) -> Self {
         DownloadError {
             cid: cid.as_ref().to_owned(),
@@ -77,8 +130,12 @@ impl DownloadError {
     }
 }
 
+/// Encapsulates all errors that can be thrown while trying to update the list of valid
+/// collection ids from [`Client::book_api_url`].
 #[derive(Debug)]
 pub enum UpdateCollectionIdsError {
+    /// A network issue was encountered or the response returned by the server indicates an
+    /// error state or otherwise does not conform to the expected JSON schema.
     Request(reqwest::Error),
 }
 
@@ -88,27 +145,50 @@ impl From<reqwest::Error> for UpdateCollectionIdsError {
     }
 }
 
+/// Encapsulates all errors that can be encountered while
+/// [`Client::download_covers_for_policy`] is running.
 #[derive(Debug)]
 pub enum DownloadCoversError {
+    /// An error was encountered while attempting to update the list of valid collection ids.
     UpdateCollectionIds(UpdateCollectionIdsError),
+    /// The provided `collection_id`/`policy_id` was not found in the list of valid ids.
     InvalidId,
+    /// An error occurred trying to access the specified `collection_id/policy_id` or
+    /// associated information via BlockFrost.
     BlockFrost(blockfrost::Error),
+    /// The specified asset was found successfully on the blockchain,
+    /// however it has no metadata.
     MetadataMissing {
+        /// The ID of the asset
         asset_id: String,
     },
+    /// The specified asset was found successfully on the blockchain, and
+    /// it has metadata, but it is missing the required `files` key in that metadata.
     MetadataFilesMissing {
+        /// The ID of the asset
         asset_id: String,
     },
+    /// The specified asset was found successfully on the blockchain, but
+    /// the metadata for one or more of the entries in its `files` array was invalid.
     MetadataFileInvalid {
+        /// The ID of the asset
         asset_id: String,
+        /// A helpful message describing the error state
         message: &'static str,
     },
+    /// The specified asset was found successfully on the blockchain, but its `files` array was empty.
     MetadataFilesEmpty {
+        /// The ID of the asset
         asset_id: String,
     },
+    /// The specified asset was found successfully on the blockchain, but one or more files in
+    /// its `files` array is missing a high-res image.
     MetadataFilesMissingHighResImage {
+        /// The id of the asset
         asset_id: String,
     },
+    /// The download process is complete however one or more errors was encountered during
+    /// download. See the [`Vec`] for the list of specific errors.
     DownloadErrors(Vec<DownloadError>),
 }
 
@@ -130,18 +210,30 @@ impl From<DownloadError> for DownloadCoversError {
     }
 }
 
+/// Encapsulates all errors that can be thrown when creating a new instance of [`Client`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum CreateClientError {
+    /// A BlockFrost project ID has not been specified. This can either be provided directly
+    /// using [`Client::with_project_id`] or using the `BLOCKFROST_PROJECT_ID` environment
+    /// variable.
     MissingProjectId,
 }
 
 impl Client {
+    /// Creates a new [`Client`] using default values for all fields.
+    ///
+    /// Requires a valid BlockFrost project id to be specified in the `BLOCKFROST_PROJECT_ID`
+    /// environment variable, or an error will be returned.
     pub fn new() -> Result<Self, CreateClientError> {
         let project_id =
             std::env::var("BLOCKFROST_PROJECT_ID").or(Err(CreateClientError::MissingProjectId))?;
         Ok(Client::with_project_id(&project_id))
     }
 
+    /// Creates a new [`Client`] using default values for all fields and the specified
+    /// `blockfrost_project_id` which must be a valid project ID for use with the BlockFrost API.
+    ///
+    /// Note that you _should not_ commit your `blockfrost_project_id` to version control!
     pub fn with_project_id(blockfrost_project_id: &str) -> Self {
         // note that BlockFrost claims that their `new` method will panic if there is an
         // invalid project ID. I have tested this and it is actually incorrect, instead you see
@@ -158,6 +250,15 @@ impl Client {
         }
     }
 
+    /// Provides an easy means for updating the cached set of valid
+    /// `policy_id`/`collection_id`s.
+    ///
+    /// This will overwrite the existing set if called. Returns an [`UpdateCollectionIdsError`]
+    /// in the event of an error.
+    ///
+    /// If the set is currently empty, this method is automatically called at the start of
+    /// [`Client::download_covers_for_policy`] so there is no need to manually call this unless
+    /// you suspect the cached set is stale.
     pub async fn update_collection_ids(&mut self) -> Result<(), UpdateCollectionIdsError> {
         let response = reqwest::get(self.book_api_url).await?.error_for_status()?;
         let collection_response: CollectionResponse = response.json().await?;
@@ -166,13 +267,38 @@ impl Client {
             .data
             .into_iter()
             .filter(|collection| {
-                collection.blockchain == "cardano" && collection.network == "mainnet"
+                collection.blockchain == "cardano" // && collection.network == "mainnet"
             })
             .map(|collection| collection.collection_id)
             .collect();
         Ok(())
     }
 
+    /// Downloads `num_covers` cover images associated with the specified `policy_id` to the
+    /// specified `target_dir`.
+    ///
+    /// The `policy_id` is first checked against [`Client::book_api_url`] to see if it is a
+    /// valid `collection_id` according to that API.
+    ///
+    /// If it passes this test, then we query the Cardano blockchain using BlockFrost to obtain
+    /// `num_covers` assets associated with that `policy_id`, and we download the high
+    /// resolution cover images associated with those assets to the specified `target_dir`.
+    ///
+    /// All downloads are performed in parallel and terminal-based progress bars are displayed
+    /// for each active download while they are underway. This can be turned off by setting
+    /// [`Client::quiet`] to `true`, but it is on by default.
+    ///
+    /// Files will be named using the format `[asset_id].[ext]` where `ext` is an appropriate
+    /// extension for the underlying image format for that cover. The `png` extension will be
+    /// used for unrecognized image formats. Supported formats are defined by the
+    /// [`extension_for`] function.
+    ///
+    /// If partial or complete downloads of the same files already exist in the specified
+    /// `target_dir`, they will be resumed and/or skipped accordingly, making this function
+    /// idempotent.
+    ///
+    /// Various debugging options for this function can be controlled directly via fields on
+    /// [`Client`].
     pub async fn download_covers_for_policy(
         &mut self,
         policy_id: &str,
@@ -275,7 +401,11 @@ impl Client {
         Ok(downloaded_files)
     }
 
-    async fn download_files(
+    /// This function is an internal implementation detail of
+    /// [`Client::download_covers_for_policy`] and will start the download process directly,
+    /// given a Vec containing tuples of `(ipfs_path, dest_path)` without having to interact
+    /// with BlockFrost.
+    pub async fn download_files(
         &self,
         files: Vec<(String, PathBuf)>,
     ) -> Result<Vec<(String, PathBuf)>, DownloadCoversError> {
@@ -360,6 +490,7 @@ impl Client {
     }
 }
 
+/// Internal implementation detail of [`Client::download_files`] that handles a single file.
 async fn download_single_file_with_progress(
     ipfs_client: &IpfsClient,
     cid: &str,
@@ -443,7 +574,9 @@ async fn download_single_file_with_progress(
     Ok(())
 }
 
-fn src_to_cid<S: AsRef<str>>(src: S) -> String {
+/// Implementation detail of [`Client::download_covers_for_policy`] that converts an
+/// `ipfs://{cid}` path to an `/ipfs/{cid}` path.
+pub fn src_to_cid<S: AsRef<str>>(src: S) -> String {
     let src = src.as_ref();
     let cid = if src.starts_with("ipfs://") {
         &src[7..]
@@ -453,7 +586,26 @@ fn src_to_cid<S: AsRef<str>>(src: S) -> String {
     format!("/ipfs/{cid}")
 }
 
-fn extension_for<S: AsRef<str>>(mime_string: S) -> &'static str {
+/// Implementation detail of [`Client::download_covers_for_policy`] that provides the proper
+/// extension for a given image mimetype.
+///
+/// All common image formats are covered with default fallback to `png` for unknown formats.
+///
+/// The following image formats are supported:
+/// - jpg
+/// - png
+/// - gif
+/// - webp
+/// - cr2
+/// - tif
+/// - bmp
+/// - heif
+/// - avif
+/// - jxr
+/// - psd
+/// - ico
+/// - ora
+pub fn extension_for<S: AsRef<str>>(mime_string: S) -> &'static str {
     match mime_string.as_ref().to_lowercase().as_str() {
         "image/jpeg" | "image/jpg" => "jpg",
         "image/png" => "png",
@@ -472,12 +624,16 @@ fn extension_for<S: AsRef<str>>(mime_string: S) -> &'static str {
     }
 }
 
+/// Used for testing, provides an appropriate runtime error if the `BLOCKFROST_PROJECT_ID` env
+/// var is missing, and otherwise returns the project id.
 #[cfg(test)]
 pub fn load_project_id() -> String {
     std::env::var("BLOCKFROST_PROJECT_ID")
         .expect("environment variable `BLOCKFROST_PROJECT_ID` must be specified to run test suite")
 }
 
+/// Used for testing. Provides a temporary directory that will exist for the life of the
+/// closure to which it is passed.
 #[cfg(test)]
 async fn with_temp_dir<F, Fut>(func: F) -> tokio::io::Result<()>
 where
