@@ -3,6 +3,7 @@ use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ipfs_api::IpfsClient;
 use ipfs_api_backend_hyper::IpfsApi;
+use rand::seq::SliceRandom;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
@@ -17,6 +18,7 @@ pub struct Client {
     blockfrost_client: BlockFrostApi,
     metadata_url: &'static str,
     slow: bool,
+    simulate_early_kill: bool,
 }
 
 #[derive(Debug)]
@@ -110,6 +112,7 @@ impl Client {
             blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
             metadata_url: METADATA_URL,
             slow: false,
+            simulate_early_kill: false,
         }
     }
 
@@ -232,11 +235,18 @@ impl Client {
             let ipfs_client = self.ipfs_client.clone();
             let tx = tx.clone();
             let slow = self.slow;
+            let simulate_early_kill = self.simulate_early_kill;
 
             local_set.spawn_local(async move {
-                let result =
-                    download_single_file_with_progress(&ipfs_client, &cid, &dest_path, &pb, slow)
-                        .await;
+                let result = download_single_file_with_progress(
+                    &ipfs_client,
+                    &cid,
+                    &dest_path,
+                    &pb,
+                    slow,
+                    simulate_early_kill,
+                )
+                .await;
                 // Send the result back to the main task
                 if tx.send((cid, result)).await.is_err() {
                     eprintln!("Failed to send result back to the main task");
@@ -271,9 +281,19 @@ async fn download_single_file_with_progress(
     dest_path: &Path,
     pb: &ProgressBar,
     slow: bool,
+    simulate_early_kill: bool,
 ) -> Result<(), DownloadErrorInner> {
     // calculate true size of file minus overhead
-    let total_size = ipfs_client.files_stat(cid).await?.size;
+    let mut total_size = ipfs_client.files_stat(cid).await?.size;
+
+    if simulate_early_kill {
+        let mut rng = rand::thread_rng();
+        total_size = (total_size as f64
+            * (&[1.0, 1.0, 0.0, 0.0, 0.5, 0.3, 0.8])
+                .choose(&mut rng)
+                .copied()
+                .unwrap()) as u64;
+    }
 
     // check if file exists and its size
     let mut start_byte = 0;
@@ -434,6 +454,46 @@ async fn test_download_covers() {
         for (cid, path) in res {
             assert_eq!(cid.len(), 53);
             let metadata = std::fs::metadata(path).unwrap();
+            assert_eq!(metadata.is_file(), true);
+            assert_ne!(metadata.len(), 0);
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_download_covers_idempotent() {
+    // checks idempotence by resuming a bunch of downloads that stopped at random points or
+    // never started.
+    load_project_id();
+    const THE_WIZARD_TIM_POLICY_ID: &'static str =
+        "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
+
+    with_temp_dir(|path| async move {
+        let mut client = Client::new().unwrap();
+        client.simulate_early_kill = true;
+        let res = client
+            .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
+            .await
+            .unwrap();
+        assert_eq!(res.len(), 5);
+        for (cid, path) in res {
+            assert_eq!(cid.len(), 53);
+            let metadata = std::fs::metadata(path).unwrap();
+            assert_eq!(metadata.is_file(), true);
+        }
+        client.simulate_early_kill = false;
+        let res = client
+            .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
+            .await
+            .unwrap();
+        assert_eq!(res.len(), 5);
+        for (cid, path) in res {
+            assert_eq!(cid.len(), 53);
+            let metadata = std::fs::metadata(path).unwrap();
+            assert_eq!(metadata.is_file(), true);
             assert_ne!(metadata.len(), 0);
         }
         Ok(())

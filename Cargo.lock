@@ -157,6 +157,7 @@ dependencies = [
  "indicatif",
  "ipfs-api",
  "ipfs-api-backend-hyper",
+ "rand 0.8.5",
  "tempdir",
  "tokio",
 ]
