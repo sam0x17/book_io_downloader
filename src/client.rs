@@ -216,16 +216,29 @@ impl Client {
         let files_ret = files.clone();
 
         // create a channel to send results of the download tasks to parent thread
-        let (tx, mut rx) = mpsc::channel(files.len());
+        let (sender, mut receiver) = mpsc::channel(files.len());
 
         for (src, dest_path) in files {
             let cid = src_to_cid(src);
             // stat object so we can calibrate the progress bar
-            let stat = match self.ipfs_client.object_stat(&cid).await {
+            let stat = match self.ipfs_client.files_stat(&cid).await {
                 Ok(stat) => stat,
                 Err(err) => Err(DownloadError::from(&cid, err))?,
             };
-            let pb = multi_progress.add(ProgressBar::new(stat.cumulative_size).with_position(0));
+
+            // calculate true size of file minus overhead, possibly simulating random
+            // incompletion of download if `simulate_early_kill` is true
+            let mut total_size = stat.size;
+            if self.simulate_early_kill {
+                let mut rng = rand::thread_rng();
+                total_size = (total_size as f64
+                    * (&[1.0, 0.0, 0.9, 0.5, 0.3, 0.8])
+                        .choose(&mut rng)
+                        .copied()
+                        .unwrap()) as u64;
+            }
+
+            let pb = multi_progress.add(ProgressBar::new(total_size).with_position(0));
             let pb_style = ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
             .unwrap()
@@ -233,9 +246,8 @@ impl Client {
             pb.set_style(pb_style);
 
             let ipfs_client = self.ipfs_client.clone();
-            let tx = tx.clone();
+            let sender = sender.clone();
             let slow = self.slow;
-            let simulate_early_kill = self.simulate_early_kill;
 
             local_set.spawn_local(async move {
                 let result = download_single_file_with_progress(
@@ -243,26 +255,26 @@ impl Client {
                     &cid,
                     &dest_path,
                     &pb,
+                    total_size,
                     slow,
-                    simulate_early_kill,
                 )
                 .await;
                 // Send the result back to the main task
-                if tx.send((cid, result)).await.is_err() {
+                if sender.send((cid, result)).await.is_err() {
                     eprintln!("Failed to send result back to the main task");
                 }
             });
         }
 
         // drop the original transmitter so the channel can close once all tasks are done
-        drop(tx);
+        drop(sender);
 
         // run the local set until completion.
         local_set.await;
 
         // collect any errors from the download tasks and return, if applicable
         let mut errors = Vec::new();
-        while let Some(result) = rx.recv().await {
+        while let Some(result) = receiver.recv().await {
             if let (cid, Err(error)) = result {
                 errors.push(DownloadError::from(cid, error));
             }
@@ -280,21 +292,9 @@ async fn download_single_file_with_progress(
     cid: &str,
     dest_path: &Path,
     pb: &ProgressBar,
+    total_size: u64,
     slow: bool,
-    simulate_early_kill: bool,
 ) -> Result<(), DownloadErrorInner> {
-    // calculate true size of file minus overhead
-    let mut total_size = ipfs_client.files_stat(cid).await?.size;
-
-    if simulate_early_kill {
-        let mut rng = rand::thread_rng();
-        total_size = (total_size as f64
-            * (&[1.0, 1.0, 0.0, 0.0, 0.5, 0.3, 0.8])
-                .choose(&mut rng)
-                .copied()
-                .unwrap()) as u64;
-    }
-
     // check if file exists and its size
     let mut start_byte = 0;
     let file_exists = dest_path.exists();
@@ -474,6 +474,7 @@ async fn test_download_covers_idempotent() {
     with_temp_dir(|path| async move {
         let mut client = Client::new().unwrap();
         client.simulate_early_kill = true;
+        // do partial downloads of a batch of 5
         let res = client
             .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
             .await
@@ -485,6 +486,7 @@ async fn test_download_covers_idempotent() {
             assert_eq!(metadata.is_file(), true);
         }
         client.simulate_early_kill = false;
+        // finish everything in the partially finished batch of 5
         let res = client
             .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
             .await
