@@ -1,15 +1,15 @@
 [package]
-name = "book_io_downloader"
+name = "bcid"
 version = "0.1.0"
 edition = "2021"
 authors = ["sam0x17"]
 repository = "https://github.com/sam0x17/book_io_downloader"
-description = "A CLI utility and client library for bulk-downloading book covers from book.io"
+description = "A CLI utility for bulk-downloading book covers from book.io via the Cardano blockchain and IPFS"
 license = "MIT"
 
 [dependencies]
 blockfrost = "0.2.1"
-clap = "4.4.7"
+clap = { version = "4.4.7", features = ["cargo", "derive"] }
 futures = "0.3.29"
 indicatif = "0.17.7"
 ipfs-api = "0.17.0"
