@@ -4,19 +4,40 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use ipfs_api::IpfsClient;
 use ipfs_api_backend_hyper::IpfsApi;
 use rand::seq::SliceRandom;
+use reqwest;
+use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-pub const METADATA_URL: &'static str = "https://api.book.io/api/v0/collections";
+pub const BOOK_API_URL: &'static str = "https://api.book.io/api/v0/collections";
+
+#[derive(Deserialize, Debug)]
+struct CollectionResponse {
+    #[serde(rename = "type")]
+    response_type: String,
+    data: Vec<Collection>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Collection {
+    collection_id: String,
+    #[allow(unused)]
+    description: String,
+    blockchain: String,
+    network: String,
+}
 
 #[derive(Clone)]
 pub struct Client {
     ipfs_client: IpfsClient,
     blockfrost_client: BlockFrostApi,
-    metadata_url: &'static str,
+    book_api_url: &'static str,
+    valid_cids: HashSet<String>,
     slow: bool,
     simulate_early_kill: bool,
 }
@@ -56,7 +77,20 @@ impl DownloadError {
 }
 
 #[derive(Debug)]
+pub enum UpdateCollectionIdsError {
+    Request(reqwest::Error),
+}
+
+impl From<reqwest::Error> for UpdateCollectionIdsError {
+    fn from(value: reqwest::Error) -> Self {
+        UpdateCollectionIdsError::Request(value)
+    }
+}
+
+#[derive(Debug)]
 pub enum DownloadCoversError {
+    UpdateCollectionIds(UpdateCollectionIdsError),
+    InvalidId,
     BlockFrost(blockfrost::Error),
     MetadataMissing {
         asset_id: String,
@@ -75,6 +109,12 @@ pub enum DownloadCoversError {
         asset_id: String,
     },
     DownloadErrors(Vec<DownloadError>),
+}
+
+impl From<UpdateCollectionIdsError> for DownloadCoversError {
+    fn from(value: UpdateCollectionIdsError) -> Self {
+        DownloadCoversError::UpdateCollectionIds(value)
+    }
 }
 
 impl From<blockfrost::Error> for DownloadCoversError {
@@ -105,23 +145,49 @@ impl Client {
         // note that BlockFrost claims that their `new` method will panic if there is an
         // invalid project ID. I have tested this and it is actually incorrect, instead you see
         // this later as an error when you go to do something with the `BlockFrostApi` object,
-        // so that is why this method is infallible. I had hoped to be able to return an
-        // `InvalidProjectId` error variant here but alas, no.
+        // so that is why this method is infallible.
         Client {
             ipfs_client: IpfsClient::default(),
             blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
-            metadata_url: METADATA_URL,
+            book_api_url: BOOK_API_URL,
+            valid_cids: HashSet::new(),
             slow: false,
             simulate_early_kill: false,
         }
     }
 
+    pub async fn update_collection_ids(&mut self) -> Result<(), UpdateCollectionIdsError> {
+        let response = reqwest::get(self.book_api_url).await?.error_for_status()?;
+        let collection_response: CollectionResponse = response.json().await?;
+        if collection_response.response_type != "success" {}
+        self.valid_cids = collection_response
+            .data
+            .into_iter()
+            .filter(|collection| {
+                collection.blockchain == "cardano" && collection.network == "mainnet"
+            })
+            .map(|collection| collection.collection_id)
+            .collect();
+        Ok(())
+    }
+
     pub async fn download_covers_for_policy(
-        &self,
+        &mut self,
         policy_id: &str,
         num_covers: usize,
         target_dir: &Path,
     ) -> Result<Vec<(String, PathBuf)>, DownloadCoversError> {
+        // update valid collection ids collection if it is empty
+        if self.valid_cids.is_empty() {
+            self.update_collection_ids().await?;
+        }
+
+        // verify that the specified policy_id is a valid collection_id in the books API
+        // endpoint
+        if !self.valid_cids.contains(policy_id) {
+            return Err(DownloadCoversError::InvalidId);
+        }
+
         // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
         // until we reach the end of the stream.
         let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
@@ -445,7 +511,7 @@ async fn test_download_covers() {
         "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
 
     with_temp_dir(|path| async move {
-        let client = Client::new().unwrap();
+        let mut client = Client::new().unwrap();
         let res = client
             .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
             .await
@@ -502,4 +568,16 @@ async fn test_download_covers_idempotent() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn test_download_covers_invalid_policy_id() {
+    load_project_id();
+    let mut client = Client::new().unwrap();
+    assert!(matches!(
+        client
+            .download_covers_for_policy("bad-id", 3, &PathBuf::from("/tmp"))
+            .await,
+        Err(DownloadCoversError::InvalidId)
+    ));
 }
