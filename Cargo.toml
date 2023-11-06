@@ -9,7 +9,7 @@ license = "MIT"
 
 [dependencies]
 blockfrost = "0.2.1"
-clap = { version = "4.4.7", features = ["cargo", "derive"] }
+clap = { version = "4.4.7", features = ["cargo", "derive", "env"] }
 futures = "0.3.29"
 indicatif = "0.17.7"
 ipfs-api = "0.17.0"

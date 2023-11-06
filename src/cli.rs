@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::client::Client;
 use clap::{ArgAction, Parser};
 
 /// Implementation of the `bcid` CLI
@@ -17,10 +18,22 @@ pub struct Cli {
     /// already exist in the specified directory, they will be resumed or skipped accordingly.
     pub output_dir: PathBuf,
 
+    #[arg(long, env = "BLOCKFROST_PROJECT_ID")]
+    /// Specifies the BlockFrost API `project_id` that will be used to query Cardano. This is
+    /// required and automatically loaded from the `BLOCKFROST_PROJECT_ID` env var.
+    pub project_id: String,
+
     /// Specifies the number of cover images that should be downloaded for the specified
     /// `policy_id`. Defaults to 10.
     #[arg(short, long)]
     pub num_covers: Option<usize>,
+
+    /// Overrides the default book.io valid covers API URL with the specified URL.
+    ///
+    /// Must be a GET endpoint that conforms to the JSON schema utilized by
+    /// https://api.book.io/api/v0/collections, which is the default value.
+    #[arg(short, long)]
+    pub api_url: Option<String>,
 
     /// If enabled, suppresses all progress bar terminal output.
     #[arg(short, long, action = ArgAction::SetTrue)]
@@ -38,4 +51,11 @@ pub struct Cli {
     /// subsequent call without `--simulate-kill`.
     #[arg(long, action = ArgAction::SetTrue)]
     pub simulate_kill: bool,
+}
+
+impl Cli {
+    /// Runs the CLI with the specified options
+    pub fn run(&self) {
+        let mut client = Client::with_project_id(&self.project_id);
+    }
 }
