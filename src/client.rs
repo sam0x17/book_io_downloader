@@ -19,9 +19,6 @@ pub struct Client {
     slow: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct CollectionMetadata;
-
 #[derive(Debug)]
 pub enum DownloadErrorInner {
     IpfsError(ipfs_api::Error),
@@ -121,7 +118,7 @@ impl Client {
         policy_id: &str,
         num_covers: usize,
         target_dir: &Path,
-    ) -> Result<CollectionMetadata, DownloadCoversError> {
+    ) -> Result<Vec<(String, PathBuf)>, DownloadCoversError> {
         // seek through assets with a quantity > 0 until we have accumulated `num_covers` or
         // until we reach the end of the stream.
         let mut assets_stream = self.blockfrost_client.assets_policy_by_id_all(policy_id);
@@ -202,17 +199,18 @@ impl Client {
         }
 
         // start all downloads in parallel
-        self.download_files(download_targets).await?;
+        let downloaded_files = self.download_files(download_targets).await?;
 
-        Ok(CollectionMetadata)
+        Ok(downloaded_files)
     }
 
     async fn download_files(
         &self,
         files: Vec<(String, PathBuf)>,
-    ) -> Result<(), DownloadCoversError> {
+    ) -> Result<Vec<(String, PathBuf)>, DownloadCoversError> {
         let multi_progress = Arc::new(MultiProgress::new());
-        let local_set = tokio::task::LocalSet::new(); // Create a LocalSet for local tasks.
+        let local_set = tokio::task::LocalSet::new();
+        let files_ret = files.clone();
 
         // create a channel to send results of the download tasks to parent thread
         let (tx, mut rx) = mpsc::channel(files.len());
@@ -263,7 +261,7 @@ impl Client {
             return Err(DownloadCoversError::DownloadErrors(errors));
         }
 
-        Ok(())
+        Ok(files_ret)
     }
 }
 
@@ -428,10 +426,16 @@ async fn test_download_covers() {
 
     with_temp_dir(|path| async move {
         let client = Client::new().unwrap();
-        client
+        let res = client
             .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
             .await
             .unwrap();
+        assert_eq!(res.len(), 5);
+        for (cid, path) in res {
+            assert_eq!(cid.len(), 53);
+            let metadata = std::fs::metadata(path).unwrap();
+            assert_ne!(metadata.len(), 0);
+        }
         Ok(())
     })
     .await
