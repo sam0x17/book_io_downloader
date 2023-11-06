@@ -576,8 +576,14 @@ async fn download_single_file_with_progress(
 
 /// Implementation detail of [`Client::download_covers_for_policy`] that converts an
 /// `ipfs://{cid}` path to an `/ipfs/{cid}` path.
+///
+/// Paths already conforming to this format should be unaffected. Everything else will
+/// automatically be prefixed with `/ipfs/`.
 pub fn src_to_cid<S: AsRef<str>>(src: S) -> String {
     let src = src.as_ref();
+    if src.starts_with("/ipfs/") {
+        return src.to_string();
+    }
     let cid = if src.starts_with("ipfs://") {
         &src[7..]
     } else {
@@ -648,6 +654,17 @@ where
 
     // The temporary directory is automatically deleted when `dir` goes out of scope here.
     Ok(())
+}
+
+#[test]
+fn test_src_to_cid() {
+    assert_eq!(src_to_cid(String::from("ipfs://my-path")), "/ipfs/my-path");
+    assert_eq!(
+        src_to_cid("ipfs://some-longer-path"),
+        "/ipfs/some-longer-path"
+    );
+    assert_eq!(src_to_cid("hello/world"), "/ipfs/hello/world");
+    assert_eq!(src_to_cid("/ipfs/test"), "/ipfs/test");
 }
 
 #[test]
