@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::client::Client;
+use crate::client::*;
 use clap::{ArgAction, Parser};
 
 /// Implementation of the `bcid` CLI
@@ -55,7 +55,32 @@ pub struct Cli {
 
 impl Cli {
     /// Runs the CLI with the specified options
-    pub fn run(&self) {
+    pub async fn run(&self) {
+        let num_covers = self.num_covers.unwrap_or(10);
         let mut client = Client::with_project_id(&self.project_id);
+        if let Some(override_api_url) = &self.api_url {
+            client.book_api_url = override_api_url.clone();
+        }
+        client.quiet = self.quiet;
+        client.simulate_early_kill = self.simulate_kill;
+        client.slow = self.slow;
+
+        match client
+            .download_covers_for_policy(self.policy_id.as_str(), num_covers, &self.output_dir)
+            .await
+        {
+            Ok(completed) => todo!(),
+            Err(err) => match err {
+                DownloadCoversError::UpdateCollectionIds(_) => todo!(),
+                DownloadCoversError::InvalidId => todo!(),
+                DownloadCoversError::BlockFrost(_) => todo!(),
+                DownloadCoversError::MetadataMissing { asset_id } => todo!(),
+                DownloadCoversError::MetadataFilesMissing { asset_id } => todo!(),
+                DownloadCoversError::MetadataFileInvalid { asset_id, message } => todo!(),
+                DownloadCoversError::MetadataFilesEmpty { asset_id } => todo!(),
+                DownloadCoversError::MetadataFilesMissingHighResImage { asset_id } => todo!(),
+                DownloadCoversError::DownloadErrors(_) => todo!(),
+            },
+        }
     }
 }

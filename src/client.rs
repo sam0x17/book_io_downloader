@@ -69,7 +69,7 @@ pub struct Client {
     ///
     /// This API is used to determine whether a given `policy_id`/`collection_id` is valid
     /// before trying to find it on Cardano.
-    pub book_api_url: &'static str,
+    pub book_api_url: String,
     /// If set to `true`, suppresses terminal-based progress bars and other output during file
     /// downloads. Defaults to `false`.
     pub quiet: bool,
@@ -242,7 +242,7 @@ impl Client {
         Client {
             ipfs_client: IpfsClient::default(),
             blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
-            book_api_url: BOOK_API_URL,
+            book_api_url: BOOK_API_URL.to_string(),
             valid_cids: HashSet::new(),
             quiet: false,
             slow: false,
@@ -260,7 +260,7 @@ impl Client {
     /// [`Client::download_covers_for_policy`] so there is no need to manually call this unless
     /// you suspect the cached set is stale.
     pub async fn update_collection_ids(&mut self) -> Result<(), UpdateCollectionIdsError> {
-        let response = reqwest::get(self.book_api_url).await?.error_for_status()?;
+        let response = reqwest::get(&self.book_api_url).await?.error_for_status()?;
         let collection_response: CollectionResponse = response.json().await?;
         if collection_response.response_type != "success" {}
         self.valid_cids = collection_response
