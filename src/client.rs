@@ -38,6 +38,7 @@ pub struct Client {
     blockfrost_client: BlockFrostApi,
     book_api_url: &'static str,
     valid_cids: HashSet<String>,
+    quiet: bool,
     slow: bool,
     simulate_early_kill: bool,
 }
@@ -151,6 +152,7 @@ impl Client {
             blockfrost_client: BlockFrostApi::new(blockfrost_project_id, Default::default()),
             book_api_url: BOOK_API_URL,
             valid_cids: HashSet::new(),
+            quiet: false,
             slow: false,
             simulate_early_kill: false,
         }
@@ -304,12 +306,17 @@ impl Client {
                         .unwrap()) as u64;
             }
 
-            let pb = multi_progress.add(ProgressBar::new(total_size).with_position(0));
-            let pb_style = ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("#>-");
-            pb.set_style(pb_style);
+            let pb = if self.quiet {
+                None
+            } else {
+                let pb = multi_progress.add(ProgressBar::new(total_size).with_position(0));
+                let pb_style = ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                .unwrap()
+                .progress_chars("#>-");
+                pb.set_style(pb_style);
+                Some(pb)
+            };
 
             let ipfs_client = self.ipfs_client.clone();
             let sender = sender.clone();
@@ -357,7 +364,7 @@ async fn download_single_file_with_progress(
     ipfs_client: &IpfsClient,
     cid: &str,
     dest_path: &Path,
-    pb: &ProgressBar,
+    pb: &Option<ProgressBar>,
     total_size: u64,
     slow: bool,
 ) -> Result<(), DownloadErrorInner> {
@@ -370,12 +377,16 @@ async fn download_single_file_with_progress(
 
         // if file exists and is complete, set progress to 100% and return
         if start_byte == total_size {
-            pb.finish_with_message("File already downloaded.");
+            if let Some(pb) = pb {
+                pb.finish_with_message("File already downloaded.");
+            }
             return Ok(());
         }
     }
 
-    pb.set_position(start_byte);
+    if let Some(pb) = pb {
+        pb.set_position(start_byte);
+    }
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -393,7 +404,9 @@ async fn download_single_file_with_progress(
     let remaining_length = if total_size > start_byte {
         total_size - start_byte
     } else {
-        pb.finish_with_message("File already downloaded.");
+        if let Some(pb) = pb {
+            pb.finish_with_message("File already downloaded.");
+        }
         return Ok(());
     };
 
@@ -407,8 +420,10 @@ async fn download_single_file_with_progress(
 
     while let Some(chunk) = stream.next().await {
         let data = chunk?;
-        pb.inc(data.len() as u64);
         file.write_all(&data).await?;
+        if let Some(pb) = pb {
+            pb.inc(data.len() as u64);
+        }
         if slow {
             tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         }
@@ -422,7 +437,9 @@ async fn download_single_file_with_progress(
         return Err(DownloadErrorInner::CorruptDownload);
     }
 
-    pb.finish_with_message("Download complete.");
+    if let Some(pb) = pb {
+        pb.finish_with_message("Download complete.");
+    }
     Ok(())
 }
 
@@ -512,6 +529,7 @@ async fn test_download_covers() {
 
     with_temp_dir(|path| async move {
         let mut client = Client::new().unwrap();
+        client.quiet = true;
         let res = client
             .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, &path)
             .await
@@ -539,6 +557,7 @@ async fn test_download_covers_idempotent() {
 
     with_temp_dir(|path| async move {
         let mut client = Client::new().unwrap();
+        client.quiet = true;
         client.simulate_early_kill = true;
         // do partial downloads of a batch of 5
         let res = client
@@ -574,6 +593,7 @@ async fn test_download_covers_idempotent() {
 async fn test_download_covers_invalid_policy_id() {
     load_project_id();
     let mut client = Client::new().unwrap();
+    client.quiet = true;
     assert!(matches!(
         client
             .download_covers_for_policy("bad-id", 3, &PathBuf::from("/tmp"))
