@@ -64,16 +64,20 @@ impl Cli {
         client.quiet = self.quiet;
         client.simulate_early_kill = self.simulate_kill;
         client.slow = self.slow;
+        let policy_id = &self.policy_id;
+        let path = self.output_dir.display().to_string();
 
         match client
             .download_covers_for_policy(self.policy_id.as_str(), num_covers, &self.output_dir)
             .await
         {
-            Ok(completed) => (),
+            Ok(completed) => {
+                let num = completed.len();
+                println!("Successfully downloaded {num}/{num_covers} covers for policy_id `{policy_id}` to `{path}`")
+            }
             Err(err) => {
                 if !self.quiet {
                     let endpoint = client.book_api_url;
-                    let policy_id = &self.policy_id;
                     match err {
                         DownloadCoversError::UpdateCollectionIds(
                             UpdateCollectionIdsError::Request(err),
@@ -104,7 +108,6 @@ impl Cli {
                                     },
                                     DownloadErrorInner::IoError(err) => {
                                         let msg = err.to_string();
-                                        let path = self.output_dir.display().to_string();
                                         eprintln!("An IO error occurred trying to write data associated with cid `{cid}` to `{path}`: \"{msg}\".");
                                     },
                                     DownloadErrorInner::CorruptDownload => eprintln!("The file that was downloaded for cid `{cid}` has failed the integrity test and is of the wrong size."),
