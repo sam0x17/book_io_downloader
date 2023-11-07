@@ -11,6 +11,18 @@ same cover images that are being downloaded are detected in the target directory
 resumed or skipped accordingly, making this process fully idempotent when run on the same
 `policy_id`, assuming the ordering of assets returned by Cardano does not change.
 
+## Installation / Requirements
+
+A valid BlockFrost API key / project id is required to use the CLI application and/or the
+client library. Although the option exists to specify this manually via the `--project-id`
+option, _you should not do this_ unless you know what you are doing. Instead you should store
+your project id in an environment variable called `BLOCKFROST_PROJECT_ID`. The client library
+is also configured to check this environment variable when initialized via the `Client::new()`
+method.
+
+As a general rule of thumb, your BlockFrost project id should never be committed to version
+control or stored in a place where others could easily obtain or see it.
+
 ## CLI Syntax
 
 ```
@@ -60,3 +72,33 @@ Options:
   -V, --version
           Print version
 ```
+## Library Example
+
+This demonstrates basic usage of the client library to download 5 cover images for the book
+"The Wizard Tim". This will display terminal progress bars for each download because we don't
+set `client.quiet` to true.
+
+```rust
+const THE_WIZARD_TIM_POLICY_ID: &'static str =
+    "c40ca49ac9fe48b86d6fd998645b5c8ac89a4e21e2cfdb9fdca3e7ac";
+
+// must be declared mutable so we can call `download_covers_for_policy`
+// because valid collection ids are cached on the client
+let mut client = Client::new().unwrap(); // blockfrost project ID automatically read from ENV
+
+
+let results: Vec<(String, PathBuf)> = client
+    .download_covers_for_policy(THE_WIZARD_TIM_POLICY_ID, 5, PathBuf::from("/some/dir"))
+    .await
+    .unwrap();
+
+assert_eq!(res.len(), 5);
+for (cid, path) in res {
+    assert_eq!(cid.len(), 53);
+    let metadata = std::fs::metadata(path).unwrap();
+    assert_eq!(metadata.is_file(), true);
+    assert_ne!(metadata.len(), 0);
+}
+```
+
+For more information see the docs for `Client` and related types.

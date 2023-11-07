@@ -33,7 +33,7 @@ pub struct Cli {
     /// Overrides the default book.io valid covers API URL with the specified URL.
     ///
     /// Must be a GET endpoint that conforms to the JSON schema utilized by
-    /// https://api.book.io/api/v0/collections, which is the default value.
+    /// <https://api.book.io/api/v0/collections>, which is the default value.
     #[arg(short, long)]
     pub api_url: Option<String>,
 
