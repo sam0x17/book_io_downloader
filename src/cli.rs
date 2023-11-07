@@ -14,9 +14,11 @@ pub struct Cli {
 
     /// Specifies the filesystem directory you would like to download cover images to.
     ///
+    /// Defaults to the current directory if not specified.
+    ///
     /// If partial or complete downloads of any of the cover images about to be downloaded
     /// already exist in the specified directory, they will be resumed or skipped accordingly.
-    pub output_dir: PathBuf,
+    pub output_dir: Option<PathBuf>,
 
     #[arg(long, env = "BLOCKFROST_PROJECT_ID")]
     /// Specifies the BlockFrost API `project_id` that will be used to query Cardano. This is
@@ -65,10 +67,15 @@ impl Cli {
         client.simulate_early_kill = self.simulate_kill;
         client.slow = self.slow;
         let policy_id = &self.policy_id;
-        let path = self.output_dir.display().to_string();
+        let output_dir = self
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+
+        let path = output_dir.display().to_string();
 
         match client
-            .download_covers_for_policy(self.policy_id.as_str(), num_covers, &self.output_dir)
+            .download_covers_for_policy(self.policy_id.as_str(), num_covers, &output_dir)
             .await
         {
             Ok(completed) => {
