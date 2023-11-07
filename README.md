@@ -13,6 +13,8 @@ resumed or skipped accordingly, making this process fully idempotent when run on
 
 ## Installation / Requirements
 
+### BlockFrost Project ID
+
 A valid BlockFrost API key / project id is required to use the CLI application and/or the
 client library. Although the option exists to specify this manually via the `--project-id`
 option, _you should not do this_ unless you know what you are doing. Instead you should store
@@ -23,12 +25,26 @@ method.
 As a general rule of thumb, your BlockFrost project id should never be committed to version
 control or stored in a place where others could easily obtain or see it.
 
+### IPFS Daemon
+
+To use the CLI application or the client library, you _must_ have an IPFS daemon running in the
+background so we can download covers from IPFS. If running on linux, the popular `kubo` package
+usually fills this requirement.
+
+On Arch Linux, this is enough to get you up and running:
+
+```$
+$ sudo pacman -S kubo
+$ ipfs init
+$ ipfs daemon
+```
+
 ## CLI Syntax
 
 ```
 A CLI utility for bulk-downloading book covers from book.io via the Cardano blockchain and IPFS
 
-Usage: bcid [OPTIONS] --project-id <PROJECT_ID> <POLICY_ID> [OUTPUT_DIR]
+Usage: bcid [OPTIONS] <POLICY_ID> [OUTPUT_DIR]
 
 Arguments:
   <POLICY_ID>
