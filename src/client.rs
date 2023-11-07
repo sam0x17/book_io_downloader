@@ -224,6 +224,7 @@ impl Client {
     ///
     /// Requires a valid BlockFrost project id to be specified in the `BLOCKFROST_PROJECT_ID`
     /// environment variable, or an error will be returned.
+    #[allow(unused)]
     pub fn new() -> Result<Self, CreateClientError> {
         let project_id =
             std::env::var("BLOCKFROST_PROJECT_ID").or(Err(CreateClientError::MissingProjectId))?;

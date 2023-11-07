@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, process::exit};
 
 use crate::client::*;
 use clap::{ArgAction, Parser};
@@ -69,18 +69,52 @@ impl Cli {
             .download_covers_for_policy(self.policy_id.as_str(), num_covers, &self.output_dir)
             .await
         {
-            Ok(completed) => todo!(),
-            Err(err) => match err {
-                DownloadCoversError::UpdateCollectionIds(_) => todo!(),
-                DownloadCoversError::InvalidId => todo!(),
-                DownloadCoversError::BlockFrost(_) => todo!(),
-                DownloadCoversError::MetadataMissing { asset_id } => todo!(),
-                DownloadCoversError::MetadataFilesMissing { asset_id } => todo!(),
-                DownloadCoversError::MetadataFileInvalid { asset_id, message } => todo!(),
-                DownloadCoversError::MetadataFilesEmpty { asset_id } => todo!(),
-                DownloadCoversError::MetadataFilesMissingHighResImage { asset_id } => todo!(),
-                DownloadCoversError::DownloadErrors(_) => todo!(),
-            },
+            Ok(completed) => (),
+            Err(err) => {
+                if !self.quiet {
+                    let endpoint = client.book_api_url;
+                    let policy_id = &self.policy_id;
+                    match err {
+                        DownloadCoversError::UpdateCollectionIds(
+                            UpdateCollectionIdsError::Request(err),
+                        ) => {
+                            let msg = err.to_string();
+                            eprintln!("An error occurred communicating with or processing the response from the valid collections endpoint `{endpoint}`: \"{msg}\".")
+                        }
+                        DownloadCoversError::InvalidId => eprintln!("The collection_id/policy_id `{policy_id}` was not found in the list of valid ids from {endpoint}."),
+                        DownloadCoversError::BlockFrost(err) => {
+							let msg = err.to_string();
+							eprintln!("An error occurred trying to access the collection_id/policy_id `{policy_id}` or associated information via BlockFrost: \"{msg}\".")
+						},
+                        DownloadCoversError::MetadataMissing { asset_id } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, however it has no metadata."),
+                        DownloadCoversError::MetadataFilesMissing { asset_id } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has metadata, but it is missing the required files key in that metadata."),
+                        DownloadCoversError::MetadataFileInvalid { asset_id, message } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has metadata, but the metadata for one or more of the entries in its files array was invalid: \"{message}\"."),
+                        DownloadCoversError::MetadataFilesEmpty { asset_id } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has metadata, but the `files` array was empty."),
+                        DownloadCoversError::MetadataFilesMissingHighResImage { asset_id } => {
+							eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has the required `files` array, but one or more entries in the array was missing a high-resolution image asset.")
+                        }
+                        DownloadCoversError::DownloadErrors(errs) => {
+							eprintln!("One or more downloads encountered errors:");
+							for err in errs {
+								let cid = err.cid;
+								match err.error {
+                                    DownloadErrorInner::IpfsError(err) => {
+                                        let msg = err.to_string();
+                                        eprintln!("An error occurred communicating with or downloading from the IPFS network for cid `{cid}`: \"{msg}\".");
+                                    },
+                                    DownloadErrorInner::IoError(err) => {
+                                        let msg = err.to_string();
+                                        let path = self.output_dir.display().to_string();
+                                        eprintln!("An IO error occurred trying to write data associated with cid `{cid}` to `{path}`: \"{msg}\".");
+                                    },
+                                    DownloadErrorInner::CorruptDownload => eprintln!("The file that was downloaded for cid `{cid}` has failed the integrity test and is of the wrong size."),
+                                }
+							}
+						},
+                    }
+                }
+                exit(1)
+            }
         }
     }
 }
