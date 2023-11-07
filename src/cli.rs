@@ -83,37 +83,85 @@ impl Cli {
                             UpdateCollectionIdsError::Request(err),
                         ) => {
                             let msg = err.to_string();
-                            eprintln!("An error occurred communicating with or processing the response from the valid collections endpoint `{endpoint}`: \"{msg}\".")
+                            eprintln!(
+                                "An error occurred communicating with or processing the response \
+                                from the valid collections endpoint `{endpoint}`: \"{msg}\"."
+                            )
                         }
-                        DownloadCoversError::InvalidId => eprintln!("The collection_id/policy_id `{policy_id}` was not found in the list of valid ids from {endpoint}."),
+                        DownloadCoversError::InvalidId => {
+                            eprintln!(
+                                "The collection_id/policy_id `{policy_id}` was not found in the \
+                                list of valid ids from {endpoint}."
+                            )
+                        }
                         DownloadCoversError::BlockFrost(err) => {
-							let msg = err.to_string();
-							eprintln!("An error occurred trying to access the collection_id/policy_id `{policy_id}` or associated information via BlockFrost: \"{msg}\".")
-						},
-                        DownloadCoversError::MetadataMissing { asset_id } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, however it has no metadata."),
-                        DownloadCoversError::MetadataFilesMissing { asset_id } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has metadata, but it is missing the required files key in that metadata."),
-                        DownloadCoversError::MetadataFileInvalid { asset_id, message } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has metadata, but the metadata for one or more of the entries in its files array was invalid: \"{message}\"."),
-                        DownloadCoversError::MetadataFilesEmpty { asset_id } => eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has metadata, but the `files` array was empty."),
+                            let msg = err.to_string();
+                            eprintln!(
+                                "An error occurred trying to access the collection_id/policy_id \
+                                `{policy_id}` or associated information via BlockFrost: \"{msg}\"."
+                            )
+                        }
+                        DownloadCoversError::MetadataMissing { asset_id } => {
+                            eprintln!(
+                                "The Cardano asset with id `{asset_id}` was found successfully, \
+                                however it has no metadata."
+                            )
+                        }
+                        DownloadCoversError::MetadataFilesMissing { asset_id } => {
+                            eprintln!(
+                                "The Cardano asset with id `{asset_id}` was found successfully, \
+                                and it has metadata, but it is missing the required files key in \
+                                that metadata."
+                            )
+                        }
+                        DownloadCoversError::MetadataFileInvalid { asset_id, message } => {
+                            eprintln!(
+                                "The Cardano asset with id `{asset_id}` was found successfully, \
+                                and it has metadata, but the metadata for one or more of the \
+                                entries in its files array was invalid: \"{message}\"."
+                            )
+                        }
+                        DownloadCoversError::MetadataFilesEmpty { asset_id } => {
+                            eprintln!(
+                                "The Cardano asset with id `{asset_id}` was found successfully, \
+                                and it has metadata, but the `files` array was empty."
+                            )
+                        }
                         DownloadCoversError::MetadataFilesMissingHighResImage { asset_id } => {
-							eprintln!("The Cardano asset with id `{asset_id}` was found successfully, and it has the required `files` array, but one or more entries in the array was missing a high-resolution image asset.")
+                            eprintln!(
+                                "The Cardano asset with id `{asset_id}` was found successfully, \
+                                and it has the required `files` array, but one or more entries \
+                                in the array was missing a high-resolution image asset."
+                            )
                         }
                         DownloadCoversError::DownloadErrors(errs) => {
-							eprintln!("One or more downloads encountered errors:");
-							for err in errs {
-								let cid = err.cid;
-								match err.error {
+                            eprintln!("One or more downloads encountered errors:");
+                            for err in errs {
+                                let cid = err.cid;
+                                match err.error {
                                     DownloadErrorInner::IpfsError(err) => {
                                         let msg = err.to_string();
-                                        eprintln!("An error occurred communicating with or downloading from the IPFS network for cid `{cid}`: \"{msg}\".");
-                                    },
+                                        eprintln!(
+                                            "An error occurred communicating with or downloading \
+                                            from the IPFS network for cid `{cid}`: \"{msg}\"."
+                                        );
+                                    }
                                     DownloadErrorInner::IoError(err) => {
                                         let msg = err.to_string();
-                                        eprintln!("An IO error occurred trying to write data associated with cid `{cid}` to `{path}`: \"{msg}\".");
-                                    },
-                                    DownloadErrorInner::CorruptDownload => eprintln!("The file that was downloaded for cid `{cid}` has failed the integrity test and is of the wrong size."),
+                                        eprintln!(
+                                            "An IO error occurred trying to write data associated \
+                                            with cid `{cid}` to `{path}`: \"{msg}\"."
+                                        );
+                                    }
+                                    DownloadErrorInner::CorruptDownload => {
+                                        eprintln!(
+                                            "The file that was downloaded for cid `{cid}` has failed \
+                                            the integrity test and is of the wrong size."
+                                        )
+                                    }
                                 }
-							}
-						},
+                            }
+                        }
                     }
                 }
                 exit(1)
